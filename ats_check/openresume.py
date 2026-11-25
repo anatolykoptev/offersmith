@@ -354,7 +354,7 @@ def checks(pdf: Path, ref_text: str, parsed: fd.Parsed | None) -> tuple[list[Che
         out.append(Check("or_page_boundary", "No role header glued onto a page break (OpenResume limitation)", WARN,
                          [f"page {s['page']} ends with '{_q(s['before'], 40)}' and page {s['page'] + 1} starts with '{_q(s['after'], 50)}': OpenResume joined them into one line" for s in straddles[:2]],
                          "A limitation of OpenResume, not a defect of the resume: its reader concatenates pages and breaks a line only after an item with an end-of-line flag, which pdf.js does not set on the last item of a page. "
-                         "Only a parser that reads pages the same way is affected; to avoid it, start the role on the previous page or insert a page break before it."))
+                         "Only a parser that reads pages the same way is affected; to avoid it, let the page break fall between two bullets of a role instead of right before its header."))
     else:
         out.append(Check("or_page_boundary", "No role header glued onto a page break (OpenResume limitation)", PASS))
 
