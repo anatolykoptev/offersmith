@@ -49,6 +49,7 @@ class Entry:
     first_line: int = 0
     last_line: int = 0
     bullets: int = 0
+    layout: str = ""  # the page layout's role for the header row ("header" / "plain": at the margin, where a role header starts); "" = no layout for it
 
 
 @dataclass
@@ -73,6 +74,8 @@ class Parsed:
     education: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     profile_end: int = 0
+    roles: list[str | None] = field(default_factory=list)  # per line: the page layout's role (footer / cont / bullet / header / other), None = unknown
+    layout_share: float = 0.0                              # share of the lines the layout could place; 0 = no layout, line-shape parsing only
 
     def section(self, canon: str) -> Section | None:
         return next((s for s in self.sections if s.canon == canon), None)
@@ -170,14 +173,17 @@ def looks_like_location(s: str) -> bool:
     return bool(t) and (bool(LOC.fullmatch(t)) or bool(LOC_FRAGMENT.search(t)))
 
 
-def parse(text: str, style_headings: set[str] | None = None) -> Parsed:
+def parse(text: str, style_headings: set[str] | None = None, layout=None) -> Parsed:
+    """layout: an ats_check.layout.Layout of the PDF the text came from. With it, a row the layout places as a wrapped
+    bullet row or a page footer is never a job header; without it (or for a row it cannot place) the line shape decides."""
     style_headings = style_headings or set()
     P = Parsed(lines=clean_lines(text))
     L = P.lines
+    P.roles, P.layout_share = layout.classes_for(L) if layout is not None and layout.usable else ([None] * len(L), 0.0)
     # --- sections
     heads: list[tuple[int, str, bool]] = []
     for i, ln in enumerate(L):
-        if i < 2:
+        if i < 2 or P.roles[i] == "footer":
             continue
         ok, via = _heading_like(ln, style_headings)
         if ok:
@@ -203,13 +209,13 @@ def parse(text: str, style_headings: set[str] | None = None) -> Parsed:
     # --- experience entries
     ex = P.section("experience")
     if ex:
-        P.entries = _entries(L, ex)
+        P.entries = _entries(L, ex, P.roles)
     ed = P.section("education")
     if ed:
         P.education = [l for l in L[ed.start: ed.end] if DEGREE.search(l) or SCHOOL.search(l)]
     sk = P.section("skills")
     if sk:
-        body = " ".join(L[sk.start: sk.end])
+        body = " ".join(l for l, r in zip(L[sk.start: sk.end], P.roles[sk.start: sk.end]) if r != "footer")
         items = [x.strip(" .•") for x in re.split(r"[,;|•\n]|\s{2,}", re.sub(r"^[^:]{2,40}:", "", body)) if x.strip(" .•")]
         P.skills = [i for i in items if 1 < len(i) < 60]
         if not body.strip():
@@ -217,15 +223,23 @@ def parse(text: str, style_headings: set[str] | None = None) -> Parsed:
     return P
 
 
-def _entries(L: list[str], ex: Section) -> list[Entry]:
+def _entries(L: list[str], ex: Section, roles: list[str | None]) -> list[Entry]:
     out: list[Entry] = []
     i = ex.start
     cur: Entry | None = None
     while i < ex.end:
         ln = L[i]
+        if roles[i] == "footer":      # a page number or running footer: no row of an entry, whatever it looks like
+            i += 1
+            continue
         if is_bullet(ln):
             if cur:
                 cur.bullets += 1
+                cur.last_line = i
+            i += 1
+            continue
+        if roles[i] == "cont":        # the layout puts this row at a bullet's text indent: the bullet's wrapped text, not a role
+            if cur:
                 cur.last_line = i
             i += 1
             continue
@@ -235,24 +249,28 @@ def _entries(L: list[str], ex: Section) -> list[Entry]:
         if has_date and words <= 25:
             title_line = ln
             first = i
-            # date-only line (stream-order extractors): title/company is the previous line
-            if (len(rest.split()) <= 1 and i - 1 >= ex.start and not is_bullet(L[i - 1])
-                    and not split_dates(L[i - 1])[1] and len(L[i - 1].split()) <= 12
-                    and not L[i - 1].endswith('.') and L[i - 1][:1].isupper()):
-                rest = L[i - 1]
-                title_line = L[i - 1] + " " + ln
-                first = i - 1
+            # date-only line (stream-order extractors): title/company is the previous row (past a page footer between them)
+            j = i - 1
+            while j >= ex.start and roles[j] == "footer":
+                j -= 1
+            if (len(rest.split()) <= 1 and j >= ex.start and not is_bullet(L[j]) and roles[j] != "cont"
+                    and not split_dates(L[j])[1] and len(L[j].split()) <= 12
+                    and not L[j].endswith('.') and (L[j][:1].isupper() or roles[j] in ("header", "plain"))):
+                rest = L[j]
+                title_line = L[j] + " " + ln
+                first = j
             t, c = _title_company(rest)
             if first < i and out and out[-1].last_line >= first:
                 out[-1].last_line = first - 1
             cur = Entry(header=title_line, title=t, company=c, dates_raw=raw, start=a, end=b, dates_ok=ok and not prob.startswith("unparse"),
-                        dates_problem=prob, current=bool(re.fullmatch(NOW, (b or "").strip(), re.I)), first_line=first, last_line=i)
+                        dates_problem=prob, current=bool(re.fullmatch(NOW, (b or "").strip(), re.I)), first_line=first, last_line=i,
+                        layout=roles[first] or "")
             out.append(cur)
         elif (not has_date and words <= 12 and not ln.endswith(".") and i + 1 < ex.end and is_bullet(L[i + 1])
               and (cur is None or cur.bullets > 0)):
             # undated header followed by bullets
             t, c = _title_company(ln)
-            cur = Entry(header=ln, title=t, company=c, dates_problem="no dates found", first_line=i, last_line=i)
+            cur = Entry(header=ln, title=t, company=c, dates_problem="no dates found", first_line=i, last_line=i, layout=roles[i] or "")
             out.append(cur)
         elif cur:
             cur.last_line = i

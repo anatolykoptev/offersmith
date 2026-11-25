@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pymupdf
 
+from .fields import BULLETS
+
 DATE_ONLY = re.compile(r"^[\s\d/\-–—.,A-Za-z']{0,40}$")
 RANGE_RX = re.compile(r"(\d{4}|present|current|now)\s*$", re.I)
 RANGE_FULL = re.compile(r"^[A-Za-z]{0,9}\.?\s*[\d'/]{0,4}\s*[–—-]\s*[A-Za-z]{0,9}\.?\s*[\d'/]{0,4}$|^[A-Za-z]{3,9}\.?\s*\d{4}\s*[–—-]\s*([A-Za-z]{3,9}\.?\s*\d{4}|present|current)$|^\d{4}\s*[–—-]\s*(\d{4}|present)$", re.I)
@@ -27,6 +29,8 @@ class Line:
     size: float
     bold: bool
     words: list = field(default_factory=list)  # (x0, x1, text)
+    lead_bold: bool = False      # the first span is bold ("*Title*, Company": a role header whose company is not)
+    text_x: float | None = None  # x of the first word after a leading bullet marker (None: no marker, or glued to the word)
 
 
 @dataclass
@@ -46,6 +50,18 @@ class Geometry:
 
 def _is_bold(span) -> bool:
     return bool(span["flags"] & 16) or "bold" in span["font"].lower() or "black" in span["font"].lower()
+
+
+def _text_x(text: str, bbox, page_words) -> float | None:
+    """Where a bullet's text starts: x of the first word after the marker. None for a row with no marker, or a marker
+    glued to its word ('•Built'), where no indent can be read."""
+    if not (text[:1] in BULLETS and text[1:2] in ("", " ", "\t")):
+        return None
+    x0, y0, x1, y1 = bbox
+    ws = sorted((w for w in page_words if y0 <= (w[1] + w[3]) / 2 <= y1 and x0 - 1 <= w[0] <= x1 + 1), key=lambda w: w[0])
+    if len(ws) >= 2 and ws[0][4] in BULLETS:
+        return ws[1][0]
+    return None
 
 
 def _ocr(page, rect) -> str:
@@ -69,6 +85,7 @@ def analyze(pdf: Path) -> Geometry:
         g.pages = len(doc)
         for pno, page in enumerate(doc):
             g.page_w, g.page_h = page.rect.width, page.rect.height
+            page_words = page.get_text("words")
             for b in page.get_text("dict")["blocks"]:
                 for l in b.get("lines", []):
                     spans = [s for s in l["spans"] if s["text"].strip()]
@@ -78,7 +95,8 @@ def analyze(pdf: Path) -> Geometry:
                     x0, y0, x1, y1 = l["bbox"]
                     g.lines.append(Line(pno, x0, y0, x1, y1, text, max(s["size"] for s in spans),
                                         all(_is_bold(s) for s in spans),
-                                        [(s["bbox"][0], s["bbox"][2], s["text"]) for s in spans]))
+                                        [(s["bbox"][0], s["bbox"][2], s["text"]) for s in spans],
+                                        _is_bold(spans[0]), _text_x(text, (x0, y0, x1, y1), page_words)))
             # images
             page_area = page.rect.width * page.rect.height
             for im in page.get_image_info():

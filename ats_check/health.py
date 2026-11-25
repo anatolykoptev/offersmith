@@ -11,6 +11,7 @@ from pathlib import Path
 from . import extract as ex
 from . import fields as fd
 from . import geometry as geo
+from . import layout as lay
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 LIGATURES = {chr(c) for c in range(0xFB00, 0xFB07)}
@@ -213,7 +214,8 @@ def run(pdf: Path) -> Health:
 
     # 9+ field checks on every view -------------------------------------------------
     junk = {n for n, _, _ in bad}
-    parsed = {e.name: fd.parse(e.text, g.style_headings) for e in oks if e.name not in junk}
+    page_layout = lay.build(g)
+    parsed = {e.name: fd.parse(e.text, g.style_headings, page_layout) for e in oks if e.name not in junk}
     if parsed:
         checks += _field_checks(parsed)
     # a table whose cells scramble job entries is a failure, not a style note
