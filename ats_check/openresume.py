@@ -170,6 +170,13 @@ def _validate(d) -> None:
         and all(isinstance(i, list) and len(i) >= 5 and isinstance(i[0], str) for i in l["items"]) for l in d["lines"]), "lines")
 
 
+def wrapper_took_effect(d: dict, v: "View") -> bool:
+    """run.ts swaps pdf.js for a wrapped copy (isEvalSupported: false, page bookkeeping). If that did not take effect nothing derived from it,
+    page checks or the safety claim, may be reported as verified."""
+    calls = d.get("getDocumentParams")
+    return calls == [{"isEvalSupported": False}] and bool(d["pages"]) and v.pages_ok
+
+
 def run_runner(pdf: Path, h: Path) -> dict:
     cmd = [str(h / "node_modules" / ".bin" / "tsx"), "--tsconfig", str(h / "open-resume" / "tsconfig.json"), str(h / "run.ts"), str(pdf.resolve())]
     try:
@@ -423,6 +430,9 @@ def checks(pdf: Path, ref_text: str, parsed: fd.Parsed | None) -> tuple[list[Che
         v = View(d)
     except (RunnerError, KeyError, TypeError) as e:
         return [Check("or_layer", title, WARN, [f"OpenResume runner failed: {e}"], f"Reinstall: {install_command()}; or silence with {ENV}=off.")], None
+    if not wrapper_took_effect(d, v):
+        return [Check("or_layer", title, WARN, ["OpenResume ran without the pdf.js wrapper; page and safety checks unverified"],
+                      f"run.ts could not wrap pdf.js (one getDocument call with isEvalSupported false, page counts that sum to the item count); reinstall: {install_command()}.")], None
     out = [Check("or_layer", title, PASS, [f"OpenResume {version(h)} read {len(v.raw)} pdf.js text items in {len(v.lines)} lines"])]
     if parsed is None:
         return out, d

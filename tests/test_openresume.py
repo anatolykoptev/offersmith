@@ -208,7 +208,7 @@ def layer_check(pdf="or_clean"):
 
 
 def payload(**over):
-    d = {"bulletPoints": ["•"], "getDocumentParams": [], "pages": [{"items": 0, "lastHasEOL": False}], "raw": [], "lines": [],
+    d = {"bulletPoints": ["•"], "getDocumentParams": [{"isEvalSupported": False}], "pages": [{"items": 0, "lastHasEOL": False}], "raw": [], "lines": [],
          "resume": {"profile": {"name": "", "email": "", "phone": "", "location": ""}, "workExperiences": [], "educations": []}}
     return {**d, **over}
 
@@ -379,3 +379,17 @@ def test_concurrent_roles_with_the_same_years_are_paired_by_their_own_text():
     w = lambda t, c: {"company": c, "jobTitle": t, "date": "2020 – Present", "descriptions": []}
     v = view([], resume={"workExperiences": [w("Designer", "Beta"), w("Engineer", "Acme")], "educations": [], "profile": {}})
     assert orl.entry_problems(v, parsed, [])[0] == []
+
+
+def test_a_runner_whose_pdfjs_wrapper_did_not_take_effect_reports_nothing_as_verified(tmp_path, monkeypatch):
+    import json
+    for name, over in (("no getDocument call recorded", {"getDocumentParams": []}),
+                       ("eval not disabled", {"getDocumentParams": [{"isEvalSupported": True}]}),
+                       ("two calls", {"getDocumentParams": [{"isEvalSupported": False}] * 2}),
+                       ("no page bookkeeping", {"pages": []}),
+                       ("page counts do not sum to the items", {"pages": [{"items": 3, "lastHasEOL": False}]})):
+        (tmp_path / "out.json").write_text(json.dumps(payload(**over)))
+        fake_install(tmp_path, monkeypatch, f"cat '{tmp_path / 'out.json'}'\n")
+        c = by_id(health.run(FIX / "or_pagebreak.pdf"))
+        assert list(c) == ["or_layer"], name
+        assert c["or_layer"].status == WARN and "ran without the pdf.js wrapper; page and safety checks unverified" in c["or_layer"].evidence[0], name
