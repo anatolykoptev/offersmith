@@ -274,49 +274,33 @@ def _field_checks(parsed: dict[str, fd.Parsed]) -> list[Check]:
         out.append(Check("entries", "Each job has title, company and parseable dates", FAIL,
                          ["no experience entries could be parsed"], "Use 'Title, Company  Mon YYYY – Mon YYYY' lines under Experience."))
     else:
-        probs = []   # (status, view, message without the view, the page layout's role for the entry's header row)
+        probs = []
         for k, p in parsed.items():
             for e in p.entries:
                 if not e.title and not e.company:
-                    probs.append((FAIL, k, f"no title/company in '{e.header[:50]}'", e.layout))
+                    probs.append((FAIL, f"{k}: no title/company in '{e.header[:50]}'"))
                 elif not e.title:
-                    probs.append((WARN, k, f"no job title recognised in '{e.header[:50]}'", e.layout))
+                    probs.append((WARN, f"{k}: no job title recognised in '{e.header[:50]}'"))
                 elif not e.company:
-                    probs.append((WARN, k, f"no company recognised in '{e.header[:50]}'", e.layout))
+                    probs.append((WARN, f"{k}: no company recognised in '{e.header[:50]}'"))
                 elif fd.looks_like_location(e.company):
-                    probs.append((WARN, k, f"company '{e.company[:40]}' looks like a location fragment in '{e.header[:50]}'", e.layout))
+                    probs.append((WARN, f"{k}: company '{e.company[:40]}' looks like a location fragment in '{e.header[:50]}'"))
                 if e.dates_problem and not e.dates_ok:
-                    probs.append((FAIL, k, f"'{e.header[:40]}' -> {e.dates_problem}", e.layout))
+                    probs.append((FAIL, f"{k}: '{e.header[:40]}' -> {e.dates_problem}"))
                 elif e.dates_problem:
-                    probs.append((WARN, k, f"'{e.header[:40]}' -> {e.dates_problem}", e.layout))
-        # One line per distinct message. A FAIL stands when the page layout puts the row at the margin, where a role header starts (a
-        # wrapped bullet row and a footer are already out of the entries). One that only a line-shape reading of the text supports (the
-        # layout puts the row elsewhere or cannot place it) is a WARN with the reason: with a layout, the row is no header; without
-        # one, the extractors must agree. A layout with no bullet indent puts wrapped rows at the margin too: there the line shape
-        # decides, as before.
-        layout_on = any(p.layout_share for p in parsed.values())
-        uniq: dict[str, tuple[str, str, set[str], bool]] = {}   # same text modulo spacing -> (status, message, views, layout places a header)
-        for st, k, m, lo in probs:
-            key = re.sub(r"\W+", "", m.lower())
-            old = uniq.get(key, (WARN, m, set(), False))
-            uniq[key] = (FAIL if FAIL in (st, old[0]) else WARN, old[1], old[2] | {k}, old[3] or lo in lay.AT_MARGIN)
-        lines = []   # (status, message, where); a FAIL first, then a demoted one (it carries the reason), then the plain WARNs
-        for st, m, seen, confirmed in uniq.values():
-            rank = 0 if st == FAIL else 2
-            if st == FAIL and not confirmed and (layout_on or len(seen) < n):
-                st, rank = WARN, 1
-                m += ("; the page layout does not place a role header on that row, so this is a line-shape reading, not a failure" if layout_on else
-                      f"; only {len(seen)} of {n} extractors read it so, so this is a line-shape reading, not a failure")
-            lines.append((rank, st, m, sorted(seen)[0] if len(seen) == 1 else f"{len(seen)} of {n} extractors"))
-        lines.sort(key=lambda x: x[0])
-        worst = FAIL if any(st == FAIL for _, st, _, _ in lines) else WARN
+                    probs.append((WARN, f"{k}: '{e.header[:40]}' -> {e.dates_problem}"))
+        # dedupe by message minus view
+        uniq = {}
+        for st, m in probs:
+            uniq.setdefault(m.split(": ", 1)[1], (st, m.split(": ", 1)[0]))
         counts = {k: len(p.entries) for k, p in parsed.items()}
         if not uniq:
             out.append(Check("entries", "Each job has title, company and parseable dates", PASS,
                              [f"{max(counts.values())} entries, all fields parsed"]))
         else:
+            worst = FAIL if any(s == FAIL for s, _ in uniq.values()) else WARN
             out.append(Check("entries", "Each job has title, company and parseable dates", worst,
-                             [f"{m} (seen in {v})" for _, _, m, v in lines[:6]],
+                             [f"{m} (seen in {v})" for m, (s, v) in list(uniq.items())[:6]],
                              "Write dates as 'Mon YYYY – Mon YYYY' or 'Mon YYYY – Present' (no seasons, no 'YY); put title and company on one line."))
     # fragility across views: always a check (a fixed denominator), WARN when any view loses or gains an entry
     sig = {k: len(p.entries) for k, p in parsed.items()}

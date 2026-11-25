@@ -17,11 +17,14 @@ from . import fields as fd
 from .geometry import Geometry, Line
 
 FOOTER, CONT, BULLET, HEADER, PLAIN, OTHER = "footer", "cont", "bullet", "header", "plain", "other"
+EXACT, PREFIX, JOIN, PART = "exact", "prefix", "join", "part"
 AT_MARGIN = (HEADER, PLAIN)   # where a role header can start: a bold row or one with a right-aligned part, or plain text
 PAGE_NUMBER = re.compile(r"(?:page\s*)?\d{1,3}(?:\s*(?:/|of)\s*\d{1,3})?|[-–—]\s*\d{1,3}\s*[-–—]", re.I)
 INDENT_TOL = 3.0     # pt: closer than this to the margin is "at the margin"; to the bullet's text x is "at the text indent"
 SAME_Y_TOL = 3.0     # pt: a footer repeats at this height on the other pages
 WINDOW = 80          # rows searched ahead of the last located row before a document-wide search
+LEADING_SLACK = 1.12  # a wrapped row sits at most this far (x the document's tightest row pitch) below the row above it
+FOOTER_GAP = 2.0     # an in-band number is a footer only when it stands this many row pitches clear of the body
 
 
 def _key(text: str) -> str:
@@ -39,6 +42,7 @@ class Row:
     text: str
     key: str
     bold: bool          # the row starts in bold
+    all_bold: bool      # every piece of the row is bold
     parts: int          # visual pieces on the row: 2 = a title and a right-aligned date
     text_x: float | None
     role: str = OTHER
@@ -63,35 +67,44 @@ class Layout:
             if not k:
                 continue
             seen += 1
-            j, last, whole = self._locate(k, cursor)
+            j, last, kind = self._locate(k, cursor)
             if j is None:
                 continue
             hit += 1
-            cursor = last
-            if whole:
+            # a head (the rest of that visual row may follow as the next extractor row) keeps the cursor on it; anything else is used up
+            cursor = j if kind == PREFIX else last + 1
+            if kind in (EXACT, PREFIX, JOIN):
                 out[n] = self.rows[j].role
         return out, (hit / seen if seen else 0.0)
 
-    def _locate(self, k: str, cursor: int) -> tuple[int | None, int, bool]:
-        """(first row, last row, whole): the visual rows that hold k, nearest at or after the cursor first. whole: the extractor
-        row IS the visual row, or starts it (its head, or a paragraph a joining extractor made of several rows, which takes the
-        role of its first row); a part in the middle or at the tail gets no role, as it would be a guess."""
+    def _locate(self, k: str, cursor: int) -> tuple[int | None, int, str]:
+        """(first row, last row, kind): the visual rows that hold k, from the cursor on first. An exact match beats a head
+        (the extractor row is the start of a visual row) beats a join (a paragraph a joining extractor made of several rows,
+        which takes the role of its first row) beats a part (the middle or tail of one: no role, it would be a guess)."""
         n = len(self.keys)
-        order = list(range(cursor, min(cursor + WINDOW, n))) + [j for j in range(n) if j < cursor or j >= cursor + WINDOW]
-        part = None
-        for j in order:
-            rk = self.keys[j]
-            if rk == k or (rk.startswith(k) and len(k) >= 4):
-                return j, j, True
-            if len(rk) >= 8 and k.startswith(rk):
-                last, acc = j, rk
-                while last + 1 < n and k.startswith(acc + self.keys[last + 1]) and self.keys[last + 1]:
-                    last += 1
-                    acc += self.keys[last]
-                return j, last, True
-            if part is None and len(k) >= 6 and k in rk:
-                part = j
-        return (part, part, False) if part is not None else (None, 0, False)
+        near = range(cursor, min(cursor + WINDOW, n))
+        far = [j for j in range(n) if j < cursor or j >= cursor + WINDOW]
+        for scan in (near, far):
+            for j in scan:
+                if self.keys[j] == k:
+                    return j, j, EXACT
+            if len(k) >= 4:
+                for j in scan:
+                    if self.keys[j].startswith(k):
+                        return j, j, PREFIX
+            for j in scan:
+                rk = self.keys[j]
+                if len(rk) >= 8 and k.startswith(rk):
+                    last, acc = j, rk
+                    while last + 1 < n and self.keys[last + 1] and k.startswith(acc + self.keys[last + 1]):
+                        last += 1
+                        acc += self.keys[last]
+                    return j, last, JOIN
+            if len(k) >= 6:
+                for j in scan:
+                    if k in self.keys[j]:
+                        return j, j, PART
+        return None, 0, ""
 
 
 def build(g: Geometry) -> Layout | None:
@@ -119,7 +132,7 @@ def _visual_rows(lines: list[Line]) -> list[Row]:
                 return
             g = sorted(group, key=lambda l: l.x0)
             text = " ".join(l.text for l in g)
-            rows.append(Row(pno, min(l.y0 for l in g), max(l.y1 for l in g), g[0].x0, text, _key(text), g[0].lead_bold, len(g), g[0].text_x))
+            rows.append(Row(pno, min(l.y0 for l in g), max(l.y1 for l in g), g[0].x0, text, _key(text), g[0].lead_bold, all(l.bold for l in g), len(g), g[0].text_x))
             group.clear()
 
         for l in pl:
@@ -143,26 +156,47 @@ def _classify(L: Layout, g: Geometry) -> None:
     L.margin = margin
     xs = [r.text_x for r in rows if r.text_x is not None]
     doc_text_x = max(set(round(x) for x in xs), key=lambda v: sum(round(x) == v for x in xs)) if xs else None
+    leading = _leading(rows)
     text_x: float | None = None
     in_bullet = False
+    above: Row | None = None   # the row above on this page; a footer or a page break leaves none to measure from
     for r in rows:
         if r.role == FOOTER:
+            above = None
             continue
+        prev = above if above is not None and above.page == r.page else None
+        above = r
         if fd.is_bullet(r.text):
             r.role, in_bullet = BULLET, True
             text_x = r.text_x if r.text_x is not None else doc_text_x
             continue
         at_margin = r.x0 - margin <= INDENT_TOL
-        if in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL and not (r.bold or r.parts > 1):
+        if (in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL and not (r.all_bold or r.parts > 1)
+                and _at_leading(prev, r, leading)):
             r.role = CONT
             continue
         in_bullet = False
         r.role = (HEADER if r.bold or r.parts > 1 else PLAIN) if at_margin else OTHER
 
 
+def _leading(rows: list[Row]) -> float:
+    """The tightest row pitch (distance between two rows' tops over the row height) among consecutive plain rows at one x on
+    one page: what the lines of one paragraph are spaced at, whatever the spacing between paragraphs and list items is."""
+    ratios = [(b.y0 - a.y0) / (a.y1 - a.y0) for a, b in zip(rows, rows[1:])
+              if a.page == b.page and FOOTER not in (a.role, b.role) and abs(a.x0 - b.x0) <= 1 and not (a.bold or b.bold)
+              and a.y1 > a.y0 and abs((a.y1 - a.y0) - (b.y1 - b.y0)) <= 1.5 and b.y0 > a.y0]
+    return min(ratios, default=1.2)
+
+
+def _at_leading(prev: Row | None, r: Row, leading: float) -> bool:
+    """r sits one line below prev, not a paragraph or list-item gap below it (a header after a list is that far). No row above
+    on the page (a page break, a footer between) leaves nothing to measure."""
+    return prev is None or (r.y0 - prev.y0) / max(prev.y1 - prev.y0, 1e-6) <= leading * LEADING_SLACK + 0.02
+
+
 def _footers(rows: list[Row], g: Geometry) -> None:
-    """A page number shape that is the first or last row of its page and sits at the same height on another page, or
-    anywhere in the header/footer band; a running footer whose text repeats (digits aside) on another page."""
+    """A page-number shape that is the first or last row of its page and sits at the same height on another page, or that stands
+    clear of the body in the header/footer band; a running footer, text that repeats (digits aside) on another page in the band."""
     by_page: dict[int, list[Row]] = {}
     for r in rows:
         by_page.setdefault(r.page, []).append(r)
@@ -171,19 +205,29 @@ def _footers(rows: list[Row], g: Geometry) -> None:
     shaped = [r for r in rows if PAGE_NUMBER.fullmatch(r.text.strip())]
     for r in shaped:
         repeats = any(o.page != r.page and abs(o.y0 - r.y0) <= SAME_Y_TOL for o in shaped)
-        if (id(r) in edge and repeats) or id(r) in in_band:
+        if (id(r) in edge and repeats) or (id(r) in in_band and _stands_clear(r, by_page[r.page])):
             r.role = FOOTER
     running: dict[str, set[int]] = {}
     for r in rows:
-        if id(r) in in_band:
+        if id(r) in in_band and _stem(r):
             running.setdefault(_stem(r), set()).add(r.page)
     for r in rows:
-        if id(r) in in_band and len(running[_stem(r)]) >= 2:
+        if id(r) in in_band and len(running.get(_stem(r), ())) >= 2:
             r.role = FOOTER
 
 
+def _stands_clear(r: Row, page: list[Row]) -> bool:
+    """r is the first or last row of its page and FOOTER_GAP row pitches from its neighbour: a footer's place, not a body row a short
+    margin pushed into the band."""
+    dys = sorted(b.y0 - a.y0 for a, b in zip(page, page[1:]) if b.y0 > a.y0)
+    pitch = dys[len(dys) // 2] if dys else 12.0
+    i = page.index(r)
+    gaps = ([r.y0 - page[i - 1].y0] if i == len(page) - 1 and i > 0 else []) + ([page[i + 1].y0 - r.y0] if i == 0 and len(page) > 1 else [])
+    return any(gap >= FOOTER_GAP * pitch for gap in gaps)
+
+
 def _stem(r: Row) -> str:
-    """A running footer's text without its page number."""
+    """A running footer's text without its page number. Digits alone leave nothing: a date row is no running footer."""
     return re.sub(r"\d+", "", r.key)
 
 

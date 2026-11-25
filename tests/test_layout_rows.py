@@ -156,6 +156,9 @@ def test_a_bold_or_right_aligned_row_at_the_bullet_text_indent_is_not_taken_for_
                 geo.Line(0, 400, 114, 500, 124, "2019 – 2021", 10.0, False, [(400, 500, "2019 – 2021")], False, None)]
     r = _roles(g)
     assert r["Staff Engineer, Initech 2019 – 2021"] == layout.OTHER
+    alone = _resume()          # wholly bold, one piece, at the text x and the line pitch below the wrapped row: still not wrapped text
+    alone.lines.append(geo.Line(0, 65, 114, 365, 124, "Wholly bold title", 10.0, True, [(65, 365, "Wholly bold title")], True, None))
+    assert _roles(alone)["Wholly bold title"] == layout.OTHER
 
 
 def test_a_row_the_layout_cannot_locate_gets_no_role_and_is_parsed_by_line_shape(run_health):
@@ -188,7 +191,7 @@ def test_an_extractor_that_joins_a_wrapped_bullet_into_one_row_is_still_located(
     assert [e.title for e in p.entries] == TITLES and p.layout_share >= 0.95
 
 
-# ---- the entries check: a FAIL needs more than a line-shape reading -----------------------------------------------
+# ---- the entries check keeps every FAIL origin/main gave it -----------------------------------------------
 
 def _p(*headers, layout_share=0.0, role=""):
     ents = [fd.Entry(header=h, title=t, company=c, dates_raw=d, start=d, dates_ok=bool(d), layout=role, first_line=i)
@@ -204,24 +207,12 @@ def _entries(parsed):
     return next(c for c in health._field_checks(parsed) if c.id == "entries")
 
 
-def test_a_view_that_alone_reads_a_job_with_no_title_is_a_warn_not_a_fail():
-    c = _entries({"a": _p(JOB, SPURIOUS), "b": _p(JOB), "c": _p(JOB)})
-    assert c.status == WARN and "only 1 of 3 extractors read it so" in c.evidence[0] and "line-shape" in c.evidence[0]
-
-
-def test_the_same_missing_title_in_every_view_with_no_layout_is_still_a_fail():
+def test_a_job_with_no_title_in_one_view_only_is_a_fail_with_or_without_a_layout():
+    """The layout vetoes wrapped rows and footers before an entry exists; it never softens a FAIL on one that does. A view that alone
+    reads a job with no title fails the gate, as on origin/main (no row here is a wrapped row or a footer)."""
+    assert _entries({"a": _p(JOB, SPURIOUS), "b": _p(JOB)}).status == FAIL
+    assert _entries({"a": _p(JOB, SPURIOUS, layout_share=1.0, role=layout.OTHER), "b": _p(JOB, layout_share=1.0, role=layout.OTHER)}).status == FAIL
     assert _entries({"a": _p(JOB, SPURIOUS), "b": _p(JOB, SPURIOUS)}).status == FAIL
-
-
-def test_a_row_the_layout_places_at_the_margin_keeps_its_fail_even_when_one_view_sees_it():
-    c = _entries({"a": _p(JOB, SPURIOUS, layout_share=1.0, role=layout.HEADER), "b": _p(JOB, layout_share=1.0, role=layout.HEADER)})
-    assert c.status == FAIL
-
-
-def test_a_row_the_layout_does_not_place_at_the_margin_is_a_warn_even_when_every_view_agrees():
-    """Every extractor shows the same wrapped row, so agreement proves nothing about it; the layout is the evidence."""
-    c = _entries({"a": _p(JOB, SPURIOUS, layout_share=1.0, role=layout.OTHER), "b": _p(JOB, SPURIOUS, layout_share=1.0, role=layout.OTHER)})
-    assert c.status == WARN and "page layout does not place a role header" in c.evidence[0]
 
 
 # ---- the date-only row pairs with the row before it, past a footer, never with a wrapped row ----------------------------
@@ -346,3 +337,83 @@ def test_a_header_glued_onto_the_row_before_it_still_makes_the_extractors_disagr
     whole, fused = fd.parse(text, h.geometry.style_headings, lay), fd.parse("\n".join(rows_), h.geometry.style_headings, lay)
     assert (len(whole.entries), len(fused.entries)) == (2, 1)
     assert next(c for c in health._field_checks({"a": whole, "b": fused}) if c.id == "entries_fragile").status == WARN
+
+
+# ---- review of the layout reading: layouts where the header x is not the section heading x, and numbers near the page edge -----------
+
+@pytest.mark.parametrize("fixture", ["indented_headers", "centered_headers"])
+def test_a_role_header_not_at_the_section_heading_x_still_fails_on_dates_nobody_reads(run_health, fixture):
+    """Headers padded in under the rule, or centred, with 'Spring' dates: every extractor reads them so, and the gate must not pass."""
+    h = run_health(fixture)
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Software Engineer"], view
+    assert status(h, "entries") == FAIL and h.gate_failed and "Spring" in " ".join(check(h, "entries").evidence)
+    assert "line-shape" not in " ".join(check(h, "entries").evidence)
+
+
+def test_a_header_that_opens_like_the_wrapped_row_before_it_is_still_a_job(run_health):
+    """'Globex Corporation' wraps off a bullet, then the next job's header starts with the same words: two jobs in every view."""
+    h = run_health("header_repeats_wrapped_row")
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Software Engineer"], view
+        assert [e.bullets for e in p.entries] == [2, 2], view
+    assert status(h, "entries") == PASS and status(h, "entries_fragile") == PASS
+
+
+def test_a_plain_header_at_the_bullet_text_x_after_paragraph_spacing_is_a_job(run_health):
+    """No bold, no right-aligned date, indented to the bullets' text x: the gap above it is a paragraph gap, not a wrapped row's."""
+    h = run_health("header_at_bullet_text_indent")
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Software Engineer"], view
+        assert [e.bullets for e in p.entries] == [3, 2], view
+
+
+def test_a_wrapped_row_that_opens_with_a_bold_word_is_still_wrapped_text(run_health):
+    """'*Kubernetes* in Mar 2019, ...' and the row after it: both belong to the bullet."""
+    h = run_health("bold_word_wrap")
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Software Engineer"], view
+        assert [e.bullets for e in p.entries] == [2, 2], view
+    assert status(h, "entries") == PASS
+
+
+def test_two_bullet_levels_keep_their_wrapped_rows_with_the_bullet(run_health):
+    h = run_health("nested_bullets")
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Software Engineer"], view
+
+
+def test_a_date_row_in_the_footer_band_is_not_a_page_number(run_health):
+    """A short bottom margin puts the stacked date row '2016 – 2019' in the band; digits only is no running footer, and a stacked
+    header whose dates sit in the band must still read as its own job."""
+    h = run_health("digit_band")
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Software Engineer", "Engineer"], view
+    assert status(h, "entries") == PASS
+
+
+def test_a_skills_row_that_is_only_a_number_in_the_footer_band_is_content(run_health):
+    """'Roland TR' / '808' wraps into the band: it sits at the normal row pitch, not apart from the body like a footer, and stays."""
+    h = run_health("band_skill")
+    for view, p in h.parsed.items():
+        assert "Roland TR 808" in " ".join(p.skills), view
+
+
+# ---- projecting extractor rows onto visual rows, on a hand-built Layout -------------------------------------------------
+
+def _lay(*rows):
+    """rows: (text, role) -> a Layout of visual rows one line apart."""
+    rs = [layout.Row(0, 50.0 + 12 * i, 61.0 + 12 * i, 50.0, t, layout._key(t), False, False, 1, None, role) for i, (t, role) in enumerate(rows)]
+    return layout.Layout(rows=rs, keys=[r.key for r in rs])
+
+
+def test_two_extractor_rows_with_one_text_take_two_visual_rows_in_order():
+    """A visual row an extractor row used up is not matched again: the same wording twice (a wrapped row, then a header) gets both roles."""
+    lay = _lay(("Globex Corporation", layout.CONT), ("Globex Corporation", layout.HEADER), ("Owned the billing service", layout.PLAIN))
+    assert lay.classes_for(["Globex Corporation", "Globex Corporation", "Owned the billing service"])[0] == [layout.CONT, layout.HEADER, layout.PLAIN]
+
+
+def test_a_row_equal_to_a_visual_row_beats_a_join_that_starts_on_an_earlier_one():
+    """Row 0 is the start of row 1's text; the extractor row is row 1 whole, so it is row 1, not a paragraph joined from row 0."""
+    lay = _lay(("Globex Corporation", layout.CONT), ("Globex Corporation, Software Engineer  Mar 2019 – Dec 2021", layout.HEADER))
+    assert lay._locate(layout._key("Globex Corporation, Software Engineer  Mar 2019 – Dec 2021"), 0) == (1, 1, layout.EXACT)

@@ -210,6 +210,67 @@ def season_brand():
     return PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n" + job_block(JOBS[0]) + job_block(j) + education() + skills()
 
 
+# ---- review of the layout reading (PR #6): layouts where a header is not where the section headings are, and numbers near the page edge
+def indented_headers():
+    """Role headers padded in under the section rule, with 'Spring' dates nobody reads: the entries check must still FAIL."""
+    return (PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n"
+            + "".join("#pad(left: 12pt)[" + job_block(j, season=True) + "]\n" for j in JOBS) + education() + skills())
+
+
+def centered_headers():
+    """Role headers centred, one line each (title, company, dates), 'Spring' dates nobody reads."""
+    s = PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n"
+    for t, c, d, bs in JOBS:
+        d = d.replace("Jan 2022", "Spring '22").replace("Present", "Fall '24").replace("Mar 2019", "Spring '19").replace("Dec 2021", "Fall '21")
+        s += f"#align(center)[*{t}*, {c}  {d}]\n{bullets(bs)}\n\n"
+    return s + education() + skills()
+
+
+def header_repeats_wrapped_row():
+    """The last bullet wraps onto a row that is a company name, and the next job's header opens with the same words."""
+    j1 = ("Senior AI Engineer", "Acme Robotics", "Jan 2022 – Present", ["Shipped an MCP server.", "Moved the billing integration over to\\ Globex Corporation"])
+    return (PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n" + job_block(j1)
+            + "#grid(columns: (1fr, auto), [*Globex Corporation*, Software Engineer], [Mar 2019 – Dec 2021])\n" + bullets(JOBS[1][3]) + "\n" + education() + skills())
+
+
+def header_at_bullet_text_indent():
+    """A plain one-line header indented to the bullets' text x, after a bullet list with paragraph spacing between it and the bullet."""
+    return (PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n" + job_block(JOBS[0])
+            + "#pad(left: 14.5pt)[Software Engineer, Globex Corporation, Mar 2019 – Dec 2021]\n" + bullets(JOBS[1][3]) + "\n" + education() + skills())
+
+
+def bold_word_wrap():
+    """A wrapped bullet row that opens with a bold word and carries a date."""
+    j1 = ("Senior AI Engineer", "Acme Robotics", "Jan 2022 – Present",
+          ["Migrated the billing service and its queue workers to\\ *Kubernetes* in Mar 2019, cutting the hosting cost by a third.\\ and then the report jobs too.", "Shipped an MCP server."])
+    return PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n" + job_block(j1) + job_block(JOBS[1]) + education() + skills()
+
+
+def nested_bullets():
+    return (PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n#grid(columns: (1fr, auto), [*Senior AI Engineer*, Acme Robotics], [Jan 2022 – Present])\n"
+            "- Led the platform team.\n  - Rebuilt the onboarding funnel for the\\ Product owner in Mar 2019, keeping the team aligned.\n"
+            "  - Tracked\\ organic clicks between Jul 2025 – Nov 2026\n- Shipped an MCP server.\n" + job_block(JOBS[1]) + education() + skills())
+
+
+def digit_band(fill=44, bottom="12mm"):
+    """A short bottom margin: the body runs into the 6.5% footer band and a stacked date row '2016 – 2019' sits in it."""
+    jobs = [("Senior AI Engineer", "Acme Robotics", "2019 – 2024", [f"Filler line {i + 1} that keeps the first page full of ordinary work for the client." for i in range(fill)]),
+            ("Software Engineer", "Globex Corporation", "2016 – 2019", ["Owned the billing workflow service in Go.", "Built a pipeline on PostgreSQL."]),
+            ("Engineer", "Initech", "2012 – 2016", ["Shipped a sync client."])]
+    s = with_footer(PRE(False), "bare", bottom=bottom) + header() + summary() + "#sech[EXPERIENCE]\n"
+    for t, c, d, bs in jobs:
+        s += f"*{t}*, {c}\n\n{d}\n\n" + bullets(bs) + "\n\n"
+    return s + education() + skills()
+
+
+def band_skill(fill=38, bottom="10mm"):
+    """A short bottom margin again: a skills row that is only '808' (a wrapped 'Roland TR 808') falls in the footer band."""
+    jobs = [("Senior AI Engineer", "Acme Robotics", "Jan 2019 – Present", [f"Filler line {i + 1} that keeps the page full of ordinary work for the client." for i in range(fill)])]
+    s = with_footer(PRE(False), "page", bottom=bottom) + header() + summary() + "#sech[EXPERIENCE]\n" + "".join(job_block(j) for j in jobs)
+    s += "Mar 2010  Senior Software Engineer, Example Manufacturing Co.\n\n" + bullets(["Owned the build system."]) + "\n\n"
+    return s + education() + "#sech[SKILLS]\nLanguages: Python, Go\n\nDrum machines: Roland TR-909, Roland TR\\ 808\n"
+
+
 def flat_bullets():
     """Bullets as plain paragraphs: a wrapped row goes back to the margin, so layout has no indent to tell it from a header."""
     s = PRE(False).replace("#set list(indent: 6pt)", "#set par(first-line-indent: 0pt)") + header() + summary() + "#sech[EXPERIENCE]\n"
@@ -300,6 +361,14 @@ def main():
         "foot_high": break_shapes("slash", 42, key=False, bottom="35mm"),
         "foot_running": break_shapes("page", 47, key=False, lead="Jane Q. Example · "),
         "foot_single": with_footer(PRE(False), "page") + header() + summary() + experience() + education() + skills(),
+        "indented_headers": indented_headers(),
+        "centered_headers": centered_headers(),
+        "header_repeats_wrapped_row": header_repeats_wrapped_row(),
+        "header_at_bullet_text_indent": header_at_bullet_text_indent(),
+        "bold_word_wrap": bold_word_wrap(),
+        "nested_bullets": nested_bullets(),
+        "digit_band": digit_band(),
+        "band_skill": band_skill(),
         "season_brand": season_brand(),
         "undated_brand": undated_brand(),
         "flat_bullets": flat_bullets(),
