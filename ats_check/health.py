@@ -289,18 +289,17 @@ def _field_checks(parsed: dict[str, fd.Parsed]) -> list[Check]:
                     probs.append((FAIL, k, f"'{e.header[:40]}' -> {e.dates_problem}", e.layout))
                 elif e.dates_problem:
                     probs.append((WARN, k, f"'{e.header[:40]}' -> {e.dates_problem}", e.layout))
-        # One line per distinct message. A FAIL stands when the page layout places a role header on the row (a bold or two-part row
-        # at the margin, where this document's headers carry that mark; any row at the margin where none does). One that only a
-        # line-shape reading of the text supports is a WARN with the reason: when a layout exists the row may be a wrapped
-        # bullet row no extractor can tell apart; without one, when the views disagree.
-        strong = any(e.layout == lay.HEADER for p in parsed.values() for e in p.entries)
-        placed = (lay.HEADER,) if strong else lay.AT_MARGIN
+        # One line per distinct message. A FAIL stands when the page layout puts the row at the margin, where a role header starts (a
+        # wrapped bullet row and a footer are already out of the entries). One that only a line-shape reading of the text supports (the
+        # layout puts the row elsewhere or cannot place it) is a WARN with the reason: with a layout, the row is no header; without
+        # one, the extractors must agree. A layout with no bullet indent puts wrapped rows at the margin too: there the line shape
+        # decides, as before.
         layout_on = any(p.layout_share for p in parsed.values())
         uniq: dict[str, tuple[str, str, set[str], bool]] = {}   # same text modulo spacing -> (status, message, views, layout places a header)
         for st, k, m, lo in probs:
             key = re.sub(r"\W+", "", m.lower())
             old = uniq.get(key, (WARN, m, set(), False))
-            uniq[key] = (FAIL if FAIL in (st, old[0]) else WARN, old[1], old[2] | {k}, old[3] or lo in placed)
+            uniq[key] = (FAIL if FAIL in (st, old[0]) else WARN, old[1], old[2] | {k}, old[3] or lo in lay.AT_MARGIN)
         lines = []   # (status, message, where); a FAIL first, then a demoted one (it carries the reason), then the plain WARNs
         for st, m, seen, confirmed in uniq.values():
             rank = 0 if st == FAIL else 2

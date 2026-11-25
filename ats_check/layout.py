@@ -1,7 +1,7 @@
 """Row roles from page layout: which extracted text row is a role header, a wrapped bullet row or a page footer.
 
 The line-based extractors (poppler, pdfplumber, PDFium, PdfPig) hand over rows with no position. Wording cannot tell
-a wrapped bullet row ("November 2026, and has done its SEO...") from a role header; layout can: a wrapped bullet row
+a wrapped bullet row ("November 2024, and has been done by Jane...") from a role header; layout can: a wrapped bullet row
 starts at the bullet's TEXT indent (right of the margin), a role header starts at the margin, a page footer repeats
 at the same height on every page. PyMuPDF's visual rows (geometry.py) are the authority; each extractor row is
 projected onto them by its text. A row that cannot be located, a PDF with no usable layout (scan, OCR, columns,
@@ -153,7 +153,7 @@ def _classify(L: Layout, g: Geometry) -> None:
             text_x = r.text_x if r.text_x is not None else doc_text_x
             continue
         at_margin = r.x0 - margin <= INDENT_TOL
-        if in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL:
+        if in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL and not (r.bold or r.parts > 1):
             r.role = CONT
             continue
         in_bullet = False

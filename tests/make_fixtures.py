@@ -147,6 +147,9 @@ SHAPE_JOBS = [
         "Shipped a menu-bar sync client in Swift.",
         "Rewrote the updater so releases roll out in stages.",
     ]),
+    ("Mobile Engineer", "Globex Corporation", "2008 – 2013 | remote", [
+        "Shipped a Swift app used by 2M people.",
+    ]),
 ]
 # plain one-line headers (no grid, no bold): the date first, and one date with a long company name ending in a full stop
 PLAIN_JOBS = [
@@ -190,6 +193,21 @@ def break_shapes(footer: str, filler: int, key: bool = True, **kw):
     role1 = ("Senior AI Engineer", "Acme Robotics", "Jan 2022 – Present", fill + ([KEY_BULLET] if key else []) + ["Shipped another service."])
     return (with_footer(PRE(False), footer, **kw) + header() + summary() + "#sech[EXPERIENCE]\n"
             + job_block(role1) + job_block(JOBS[1]) + education() + skills())
+
+
+def undated_brand():
+    """Two headers with no date, a lowercase brand and a title alone, each right after a bullet: still jobs, and a job with no dates still FAILs."""
+    jobs = [("eBay, Staff Engineer", ["Cut checkout latency by a quarter."]), ("iOS Developer", ["Built the first version of the mobile client."])]
+    s = PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n" + job_block(JOBS[0])
+    for head, bs in jobs:
+        s += f"{head}\n\n{bullets(bs)}\n\n"
+    return s + education() + skills()
+
+
+def season_brand():
+    """A lowercase-brand header after a bullet with a date no parser reads: the entries check must still FAIL."""
+    j = ("Software Engineer", "dbt Labs", "Spring '19 – Fall '21", JOBS[1][3])
+    return PRE(False) + header() + summary() + "#sech[EXPERIENCE]\n" + job_block(JOBS[0]) + job_block(j) + education() + skills()
 
 
 def flat_bullets():
@@ -282,6 +300,8 @@ def main():
         "foot_high": break_shapes("slash", 42, key=False, bottom="35mm"),
         "foot_running": break_shapes("page", 47, key=False, lead="Jane Q. Example · "),
         "foot_single": with_footer(PRE(False), "page") + header() + summary() + experience() + education() + skills(),
+        "season_brand": season_brand(),
+        "undated_brand": undated_brand(),
         "flat_bullets": flat_bullets(),
         "hanging_marker": hanging_marker(),
     }

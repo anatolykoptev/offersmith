@@ -13,7 +13,8 @@ from ats_check import match as m
 from ats_check.health import FAIL, PASS, WARN
 
 FIX = Path(__file__).parent / "fixtures"
-TITLES = ["Senior AI Engineer", "iOS Engineer", "Software Engineer", "macOS Engineer", "Software Engineer", "Senior Software Engineer"]
+TITLES = ["Senior AI Engineer", "iOS Engineer", "Software Engineer", "macOS Engineer", "Mobile Engineer", "Software Engineer", "Senior Software Engineer"]
+BULLETS = [10, 2, 2, 2, 1, 1, 1]
 
 
 def status(h, cid):
@@ -38,13 +39,14 @@ def role_of(rs, start):
 def test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor(run_health):
     """Wrapped rows ending in a date or a date range, starting with a month or lowercase, 'Acme Inc.' and ':' wraps, 'Product owner in
     Mar 2019', a short undated tail and a bare '2' (SOC / 2), next to lowercase-brand, 'macOS', date-first and long single-date
-    headers: six jobs in every view, with the bullets the layout shows (10, 2, 2, 2, 1, 1)."""
+    headers and a header whose date row ends in '| remote': seven jobs in every view, with the bullets the layout shows."""
     h = run_health("wrap_shapes")
     assert len(h.parsed) == 6
     for view, p in h.parsed.items():
         assert [e.title for e in p.entries] == TITLES, view
-        assert [e.bullets for e in p.entries] == [10, 2, 2, 2, 1, 1], view
-        assert [e.layout in layout.AT_MARGIN for e in p.entries] == [True] * 6, view   # each header row was placed at the margin
+        assert [e.bullets for e in p.entries] == BULLETS, view
+        assert [e.layout in layout.AT_MARGIN for e in p.entries] == [True] * 7, view   # each header row was placed at the margin
+        assert (p.entries[4].start, p.entries[4].end) == ("2008", "2013"), view         # '2008 – 2013 | remote' stays the Mobile Engineer's, not the job before it's
     assert status(h, "entries_fragile") == PASS and not h.gate_failed
 
 
@@ -70,8 +72,8 @@ def test_without_the_layout_the_parser_keeps_its_line_shape_behaviour(run_health
     """What origin/main does with the same text: every dated wrapped row and the bare number becomes a job. The layout is the fix."""
     h = run_health("wrap_shapes")
     text = next(e.text for e in h.extractions if e.name == "pdftotext-layout")
-    assert len(fd.parse(text, h.geometry.style_headings).entries) == 15
-    assert len(fd.parse(text, h.geometry.style_headings, layout.build(h.geometry)).entries) == 6
+    assert len(fd.parse(text, h.geometry.style_headings).entries) == 16
+    assert len(fd.parse(text, h.geometry.style_headings, layout.build(h.geometry)).entries) == 7
 
 
 # ---- page footers -------------------------------------------------------------------------------------------------
@@ -136,16 +138,24 @@ def test_a_pdf_with_no_text_has_no_layout():
 
 def test_a_layout_with_no_bullet_indent_places_no_wrapped_row_and_the_parser_falls_back(run_health):
     """Wrapped rows return to the margin (flat_bullets) or the bullet's text starts at the margin (hanging_marker): nothing tells a wrapped
-    row from a header, so no row is a wrapped row and the parser reads the line shape, as before. Dated wrapped rows then pass as
-    jobs, and that reading alone is a WARN, not 'FIX PARSING FIRST'."""
+    row from a header, so no row is a wrapped row and the parser reads the line shape exactly as origin/main does: the dated wrapped rows
+    pass as jobs (11 entries) and the entries check keeps its FAIL. The layout does not claim what it cannot see."""
     for name in ("flat_bullets", "hanging_marker"):
         rs = rows(name)
         assert layout.CONT not in {r.role for r in rs}, name
         assert role_of(rs, "iOS Engineer") == layout.HEADER and role_of(rs, "Senior AI Engineer") == layout.HEADER, name
         h = run_health(name)
         assert {len(p.entries) for p in h.parsed.values()} == {11}, name    # the line-shape count: 2 jobs + 9 wrapped rows
-        assert status(h, "entries") == WARN and not h.gate_failed, name
-        assert "line-shape reading" in " ".join(check(h, "entries").evidence), name
+        assert status(h, "entries") == FAIL and h.gate_failed, name
+
+
+def test_a_bold_or_right_aligned_row_at_the_bullet_text_indent_is_not_taken_for_a_wrapped_row():
+    """A role nested under an employer starts at the bullet's text indent too; bold, or a right-aligned part, marks it a header."""
+    g = _resume()
+    g.lines += [geo.Line(0, 65, 114, 365, 124, "Staff Engineer, Initech", 10.0, True, [(65, 365, "Staff Engineer, Initech")], True, None),
+                geo.Line(0, 400, 114, 500, 124, "2019 – 2021", 10.0, False, [(400, 500, "2019 – 2021")], False, None)]
+    r = _roles(g)
+    assert r["Staff Engineer, Initech 2019 – 2021"] == layout.OTHER
 
 
 def test_a_row_the_layout_cannot_locate_gets_no_role_and_is_parsed_by_line_shape(run_health):
@@ -153,6 +163,15 @@ def test_a_row_the_layout_cannot_locate_gets_no_role_and_is_parsed_by_line_shape
     p = fd.parse("Jane Q. Example\nEngineer\nEXPERIENCE\nStaff Engineer, Initech  Jan 2020 – Present\n• Built a thing.\nSKILLS\nPython, Go, Docker\n",
                  layout=layout.build(h.geometry))
     assert p.roles[3:5] == [None, None] and [e.title for e in p.entries] == ["Staff Engineer"] and p.entries[0].layout == ""
+
+
+def test_a_row_that_is_only_the_tail_of_a_visual_row_gets_no_role(run_health):
+    """PyMuPDF reads a header's right-aligned date as a row of its own; that row is a part of the header row, not a header: no role, and the
+    title row before it carries the header role the entry keeps."""
+    h = run_health("wrap_shapes")
+    p = h.parsed["pymupdf"]
+    i = p.lines.index("Mar 2019 – Dec 2021")
+    assert p.roles[i] is None and p.roles[i - 1] == layout.HEADER and p.lines[i - 1].startswith("iOS Engineer")
 
 
 def test_an_extractor_that_joins_a_wrapped_bullet_into_one_row_is_still_located(run_health):
@@ -291,3 +310,39 @@ def test_a_page_number_shape_at_the_same_height_on_two_pages_is_a_footer_whereve
 def test_a_page_number_in_the_header_footer_band_is_a_footer_with_no_second_page():
     g = _resume((0, 300, 760, "Page 1"), pages=1)
     assert _roles(g)["Page 1"] == layout.FOOTER
+
+
+# ---- the cases the layout must not weaken ----------------------------------------------------------------------------
+
+def test_a_header_with_no_date_right_after_a_bullet_is_still_a_job_and_still_a_fail(run_health):
+    """'eBay, Staff Engineer' and 'iOS Developer': lowercase brands, no date. They are jobs; a job with no date is what the check is for."""
+    h = run_health("undated_brand")
+    for view, p in h.parsed.items():
+        assert [e.title for e in p.entries] == ["Senior AI Engineer", "Staff Engineer", "iOS Developer"], view
+        assert [e.dates_problem for e in p.entries][1:] == ["no dates found"] * 2, view
+    assert status(h, "entries") == FAIL and h.gate_failed
+
+
+def test_a_lowercase_brand_header_with_a_date_nobody_reads_still_fails(run_health):
+    h = run_health("season_brand")
+    for view, p in h.parsed.items():
+        assert [(e.title, e.company) for e in p.entries] == [("Senior AI Engineer", "Acme Robotics"), ("Software Engineer", "dbt Labs")], view
+    assert status(h, "entries") == FAIL and "Spring" in " ".join(check(h, "entries").evidence)
+
+
+def test_a_header_glued_onto_the_row_before_it_still_makes_the_extractors_disagree(run_health):
+    """An extractor that fuses the last bullet of one job with the next job's header loses that job: the entry-count WARN is how a
+    candidate sees it, and the layout does not paper over it."""
+    h = run_health("clean")
+    text = next(e.text for e in h.extractions if e.name == "pdftotext-layout")
+    last, head = "that gate every release.", "Software Engineer, Globex Corporation"
+    assert last in text and head in text
+    rows_ = text.splitlines()
+    i = next(n for n, ln in enumerate(rows_) if ln.rstrip().endswith(last))
+    j = next(n for n, ln in enumerate(rows_) if ln.strip().startswith(head))
+    rows_[i] = rows_[i].rstrip() + "  " + rows_[j].strip()
+    del rows_[j]
+    lay = layout.build(h.geometry)
+    whole, fused = fd.parse(text, h.geometry.style_headings, lay), fd.parse("\n".join(rows_), h.geometry.style_headings, lay)
+    assert (len(whole.entries), len(fused.entries)) == (2, 1)
+    assert next(c for c in health._field_checks({"a": whole, "b": fused}) if c.id == "entries_fragile").status == WARN
