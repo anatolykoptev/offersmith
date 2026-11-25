@@ -168,6 +168,60 @@ def ligature_codepoints(src: Path, dst: Path):
     doc.save(dst, garbage=4, deflate=True)
 
 
+# ---- fixtures for the optional OpenResume layer (tests/test_openresume.py) --------------------------------------------------
+# Base "or_clean": a resume OpenResume reads fully (title word without a comma, school and degree on two lines, round bullets).
+# Every other or_* fixture differs from it by exactly one defect.
+EXTRA = ["Mentored four engineers and ran the weekly architecture review.", "Wrote the on-call runbook adopted by three teams."]
+OR_JOBS = [(t, c, d, bs + EXTRA) for t, c, d, bs in JOBS]    # enough bullet gaps that the usual line gap is the mode, as in a real resume
+
+
+def or_job(j, gap=False):
+    t, c, d, bs = j
+    body = "\n".join(f"- {esc(b)}" for b in bs)
+    if gap:                                   # a vertical gap inside one role, larger than 1.4x the usual line gap
+        first, rest = bs[0], bs[1:]
+        body = f"- {esc(first)}\n#v(0.9em)\n" + "\n".join(f"- {esc(b)}" for b in rest)
+    return f"#grid(columns: (1fr, auto), [*{t}* | {c}], [{d}])\n{body}\n"
+
+
+def or_education(oneline=False):
+    d, sch, y = EDU[0]
+    if oneline:
+        return f"#sech[EDUCATION]\n#grid(columns: (1fr, auto), [*BBA, {sch}*], [{y}])\n"
+    return f"#sech[EDUCATION]\n#grid(columns: (1fr, auto), [*{sch}*], [{y}])\n{d}\n"
+
+
+def or_resume(gap=False, dash=False, oneline_edu=False, pagebreak=False):
+    pre = PRE(False)
+    if dash:
+        pre += '#set list(marker: [–])\n'
+    jobs = [or_job(OR_JOBS[0], gap=gap), ("#pagebreak()\n" if pagebreak else "#v(0.9em)\n") + or_job(OR_JOBS[1])]
+    return (pre + header() + summary() + "#sech[EXPERIENCE]\n" + "".join(jobs) + or_education(oneline_edu) + skills())
+
+
+def wordwise(src: Path, dst: Path):
+    """Re-typeset every word of `src` at its own absolute position, so each word gets its own text matrix (what LaTeX font expansion
+    does): pdf.js then returns one item per word and a distance-based joiner such as OpenResume's glues them."""
+    doc = pymupdf.open(src)
+    placed = []
+    for b in doc[0].get_text("rawdict")["blocks"]:
+        for ln in b.get("lines", []):
+            for sp in ln["spans"]:
+                cur = []
+                for ch in sp["chars"] + [{"c": " "}]:
+                    if ch["c"] == " ":
+                        if cur:
+                            w = "".join(c["c"] for c in cur).replace("\\", "\\\\").replace('"', '\\"')
+                            placed.append(f'#place(top + left, dx: {cur[0]["origin"][0]:.2f}pt, dy: {cur[0]["origin"][1]:.2f}pt, '
+                                          f'text(size: {sp["size"]:.2f}pt, weight: "{"bold" if sp["flags"] & 16 else "regular"}", "{w}"))')
+                        cur = []
+                    else:
+                        cur.append(ch)
+    typ = ('#set page(paper: "us-letter", margin: 0pt)\n#set text(ligatures: false, top-edge: "baseline", bottom-edge: "baseline")\n'
+           + "\n".join(placed) + "\n")
+    compile_typ(typ, dst)
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     # skills image first (a PNG of the skills block)
@@ -184,8 +238,16 @@ def main():
         "skills_image": skills_image(),
         "icon_contact": clean(icons=True),
     }
+    jobs.update({
+        "or_clean": or_resume(),
+        "or_endash": or_resume(dash=True),
+        "or_gap": or_resume(gap=True),
+        "or_oneline_edu": or_resume(oneline_edu=True),
+        "or_pagebreak": or_resume(pagebreak=True),
+    })
     for name, src in jobs.items():
         compile_typ(src, OUT / f"{name}.pdf")
+    wordwise(OUT / "or_clean.pdf", OUT / "or_wordwise.pdf")
     strip_tounicode(OUT / "clean.pdf", OUT / "no_tounicode.pdf")
     tmp_lig = OUT / "_lig.pdf"
     (OUT / "ligatures.pdf").rename(tmp_lig)

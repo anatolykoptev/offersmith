@@ -66,6 +66,7 @@ A synthetic master, its sidecars, a resume and a letter for a made-up candidate 
 - **Trust:** parse failures (the extractors really disagree, and the evidence quotes the text); which posting terms are literally absent from what a parser reads; where a term sits; the master-based split of true additions, gaps and rejected claims.
 - **Do not trust as a prediction:** the coverage percent or the AI grade. No public spec exists for Workday, HiredScore or Ashby ranking, so the AI layer is an LLM proxy and the coverage number is a relative guide for comparing two versions of the same resume against the same posting, not a probability of being shortlisted.
 - **Not modelled:** knock-out questions inside the application form, recruiter sourcing outside the ATS, DOCX-specific parsing, non-English resumes, OCR-based pipelines.
+- **Optional second parser:** with Node installed (`sh tools/openresume/install.sh`) the check also runs OpenResume's own PDF parser and reports what it loses: glued words, bullets it does not know, a role split in two, an empty degree. It is one open-source parser on pdf.js text items, a fragility signal and not a model of any vendor's ATS.
 - Knock-outs (years, degree, location, clearance) are surfaced for you to answer, never decided.
 
 The scoring rules, the extractors and the safety of the LLM calls are documented in [docs/ats-check.md](docs/ats-check.md).

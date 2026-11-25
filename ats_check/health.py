@@ -35,6 +35,7 @@ class Health:
     parsed: dict[str, fd.Parsed]
     match_view: str            # extractor whose text feeds the matcher
     agreement: dict[str, float]
+    openresume: dict | None = None   # the optional OpenResume layer's raw output (ats_check.openresume)
 
     @property
     def gate_failed(self) -> bool:
@@ -223,7 +224,13 @@ def run(pdf: Path) -> Health:
         by["tables"].evidence.append("entry fields broke under at least one extractor (see entries)")
     clean_oks = [e for e in oks if e.name not in junk]
     match_view = ref if ref in {e.name for e in clean_oks} else (clean_oks[0].name if clean_oks else "")
-    return Health(checks, exs, g, parsed, match_view, vs_ref)
+    from . import openresume as orl          # optional layer; imported here because openresume imports Check from this module
+    ref_text = next((e.text for e in clean_oks if e.name == match_view), "")
+    or_checks, or_raw = orl.checks(pdf, ref_text, parsed.get(match_view)) if ref_text else ([], None)
+    checks += or_checks
+    H = Health(checks, exs, g, parsed, match_view, vs_ref)
+    H.openresume = or_raw
+    return H
 
 
 def _field_checks(parsed: dict[str, fd.Parsed]) -> list[Check]:

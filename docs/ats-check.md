@@ -33,7 +33,7 @@ real master in this repository. Keep your own outside the repository.
 
 ## What it does
 
-1. **Parse health** (blocking). Five engine families (poppler `-layout` and `-raw`, PyMuPDF, pdfplumber, pypdfium2, Filee) plus PyMuPDF geometry. Checks: extractor count, text
+1. **Parse health** (blocking). Five engine families (poppler `-layout` and `-raw`, PyMuPDF, pdfplumber, pypdfium2, Filee) plus PyMuPDF geometry, and optionally OpenResume's own parser on pdf.js items (below). Checks: extractor count, text
    layer, ToUnicode / `(cid:N)` junk, ligature code points, icon glyphs, reading-order agreement,
    column gutter, ruled tables, big images with no text (OCR shown as evidence when `tesseract` is
    present), contact only in the header/footer band, then fields modelled on OpenResume run on
@@ -164,7 +164,7 @@ Resume and JD text are inserted as data with an instruction not to follow them.
 
 Python 3.13 via `uv` (`pyproject.toml` + `uv.lock`): PyMuPDF, pdfplumber, PyYAML. System: poppler
 (`pdftotext`), `curl` (JD fetch: Workday's edge answers 429 to Python's urllib on the detail call),
-`claude` CLI (Claude Code; LLM layers, optional with `--no-llm`), optional `tesseract` (image OCR evidence), optional `filee` CLI. No Java,
+`claude` CLI (Claude Code; LLM layers, optional with `--no-llm`), optional `tesseract` (image OCR evidence), optional `filee` CLI, optional Node for the [OpenResume layer](#the-openresume-layer-optional). No Java,
 no JVM, no download cache: everything is a Python wheel or a tool already installed.
 
 ### Extractors: why these engines
@@ -181,14 +181,40 @@ If `filee` is missing the extractor is skipped with a WARN ("extractors" check),
 other four engine families still compare. The version of each is in `report.json`.
 Apache Tika was dropped (it needs a JVM, which flashes a Dock icon on macOS).
 
+## The OpenResume layer (optional)
+
+A second, independent reader of the same PDF: [OpenResume](https://github.com/xitanggg/open-resume)'s own parser (`readPdf` -> `groupTextItemsIntoLines` -> `groupLinesIntoSections` -> `extractResumeFromSections`), run unmodified on pdf.js text items and compared with the consensus of our extractors. It catches what text-only extractors cannot: our five engines return text, OpenResume works on pdf.js items, their order, positions and fonts, so a PDF can read perfectly in all five and still lose words, bullets or a role in OpenResume. It is one open-source parser, not a production ATS: its findings are evidence of fragility, not a prediction of any vendor's behaviour.
+
+Install (needs `node` >= 20, `npm`, `git`; about 65 MB in `~/.cache/ats-check/openresume`, or the folder in `ATS_CHECK_OPENRESUME`):
+
+```
+sh tools/openresume/install.sh        # from the offersmith checkout or ${CLAUDE_PLUGIN_ROOT}
+```
+
+It fetches OpenResume at one pinned commit (`4f8255a`, verified by `git rev-parse`), `pdfjs-dist` 3.7.107 and `tsx` from the lockfile in `tools/openresume/`, and `tools/openresume/run.ts` runs the parser and prints one JSON line. `ATS_CHECK_OPENRESUME=off` switches the layer off silently. With the layer not installed, or Node missing, or the runner failing, the report carries one WARN ("OpenResume parser layer": skipped, with the install command) and nothing else changes; it is never a FAIL. OpenResume is AGPL-3.0: nothing of it is stored in this repository or the wheel, it is fetched on the user's machine and run locally and unmodified (see [THIRD_PARTY.md](../THIRD_PARTY.md)). `pdfjs-dist` is pinned to the version in OpenResume's own lockfile so the layer sees the same text items OpenResume sees; that version has a known flaw (GHSA-wgrm-67xf-hhpq), so the runner runs with `--disallow-code-generation-from-strings` and refuses to start without it.
+
+| Check (id) | What it compares | Result |
+|---|---|---|
+| pdf.js item granularity (`or_granularity`) | share of single-word pdf.js items on body lines (lines of >= 6 words) | WARN at >= 50% of >= 12 items: every word has its own text matrix (LaTeX font expansion / microtype, per-word positioning) |
+| Glued words (`or_glued`) | an OpenResume token of >= 8 letters that no extractor has as a word but that equals 2-6 consecutive words of the consensus text | WARN, quotes `OwnsGEOandSEO` against `Owns GEO and SEO` |
+| Bullet glyph (`or_bullets`) | the glyph that starts the consensus bullet lines of Experience against OpenResume's own `BULLET_POINTS` (read from the parser, not copied) | WARN names the glyph (code point and name) and the list |
+| Work entries (`or_entries`) | per consensus entry with a recognised title, matched by its years: title, company, dates; entries with no company, title or date (a role split by a vertical gap > 1.4x the usual line gap); a role with no OpenResume entry | WARN; FAIL only if OpenResume finds no work entry at all while the consensus has some |
+| Education (`or_education`) | school or degree empty (for example `BBA, University of X` on one bold line scores as neither) | WARN |
+| Page boundary (`or_page_boundary`) | a role header or section heading that OpenResume joined onto the previous page's last line | WARN, labelled a limitation of OpenResume; left out of `Top fixes` and not counted again as a missing role in `or_entries` |
+| Contact (`or_contact`) | email, phone, name, location against the consensus parse | WARN; FAIL when the email is empty or different |
+
+FAIL or WARN: a FAIL turns the verdict into "FIX PARSING FIRST", so a check fails only when a field an ATS needs is lost outright and no other extractor can make up for it: the email (a recruiter cannot reach the candidate) or every work entry (the whole Experience section is invisible). Everything else is a WARN: glued words, unknown bullets, a split role or an empty degree are damage in one parser while five other readers see the text intact, and the text matcher does not use OpenResume's view. Page boundary is the weakest signal: in OpenResume's code `readPdf` concatenates the items of all pages, `groupTextItemsIntoLines` starts a new line only after an item with `hasEOL`, and pdf.js sets no `hasEOL` on the last item of a page, so the first line of page N+1 is appended to the last line of page N. A parser that reads pages separately is unaffected; the check says so and offers the layout workaround (start the role on the previous page, or put a page break before it). The `Founder,` finding is likewise specific to OpenResume: it matches a job title only when a whitespace-separated word equals a title in its fixed list, so a comma after the title word loses the title.
+
+Not covered: OpenResume's skills, projects and custom sections, and anything OpenResume does not parse. The thresholds (50% of items, 8 letters) come from three real LaTeX resumes and the synthetic fixtures, not from a labelled corpus.
+
 ## Tests
 
-`uv run pytest` needs `pdftotext` (poppler) and `tesseract`. The suite replaces the Filee CLI with `tests/fake_filee` (poppler text behind Filee's argv), so results do not depend on a locally installed `filee`; the real PdfPig engine is therefore not exercised by the tests.
+`uv run pytest` needs `pdftotext` (poppler) and `tesseract`; `tests/test_openresume.py` also needs the OpenResume layer (`sh tools/openresume/install.sh`; it skips when Node or the install is missing, and fails in CI). The suite switches the layer off everywhere else. The suite replaces the Filee CLI with `tests/fake_filee` (poppler text behind Filee's argv), so results do not depend on a locally installed `filee`; the real PdfPig engine is therefore not exercised by the tests.
 
 `tests/fixtures/*.pdf` (all about a made-up candidate, Jane Q. Example) are generated with `typst` (`uv run python tests/make_fixtures.py`):
 clean (must pass everything), two-column, ruled table, contact only in page header, ligature code
 points, "My Journey" heading, "Spring '22" dates, skills as an image, icon glyphs, and a copy of the
-clean one with ToUnicode stripped. Each bad fixture trips its own check and a mutation proves it
+clean one with ToUnicode stripped. `or_clean`, `or_wordwise` (one text matrix per word), `or_endash`, `or_gap`, `or_oneline_edu` and `or_pagebreak` are the OpenResume-layer set: the base reads cleanly and each other differs by one defect. Each bad fixture trips its own check and a mutation proves it
 (`tests/mutate.py` edits one call site, the named test must go RED; every mutant is killed, run it to see the count). LLM layers are
 mocked (the CLI path is exercised by patching `llm.subprocess`, where the default runner is bound); the sandbox flags, canary logic and alias verification are unit-tested.
 

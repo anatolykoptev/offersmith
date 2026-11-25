@@ -21,6 +21,7 @@ S = "tests/test_samples.py"
 G = "tests/test_score_gates.py"
 W = "tests/test_cli_wiring.py"
 P3 = "tests/test_p3.py"
+OR = "tests/test_openresume.py"
 
 # (file, anchor, replacement, test selector, what it proves)
 MUTANTS = [
@@ -99,7 +100,7 @@ MUTANTS = [
     ("fields.py", "    contact = [l for l in prof if EMAIL.search(l) or PHONE.search(l)]\n    for line in contact:", "    contact = []\n    for line in []:", f"{P}::test_location_is_the_contact_line_not_a_headline", "M6: location from the contact line"),
     ("health.py", "                elif fd.looks_like_location(e.company):", "                elif False:", f"{P}::test_company_that_is_a_location_fragment_is_flagged", "M6: location-fragment company"),
     ("health.py", "    if len(set(sig.values())) > 1:\n        out.append(Check(\"entries_fragile\"", "    if False:\n        out.append(Check(\"entries_fragile\"", f"{P}::test_a_job_that_vanishes_in_one_view_is_a_fix_not_a_pass", "M6: entry loss across views"),
-    ("score.py", "c.id not in (\"location\", \"phone\", \"name\", \"reading_order\")", "c.id not in (\"location\", \"phone\", \"name\", \"entries_fragile\", \"reading_order\")", f"{P}::test_a_job_that_vanishes_in_one_view_is_a_fix_not_a_pass", "M6: entries_fragile surfaces in fixes"),
+    ("score.py", "c.id not in (\"location\", \"phone\", \"name\", \"reading_order\",", "c.id not in (\"location\", \"phone\", \"name\", \"entries_fragile\", \"reading_order\",", f"{P}::test_a_job_that_vanishes_in_one_view_is_a_fix_not_a_pass", "M6: entries_fragile surfaces in fixes"),
     ("health.py", "    if not alpha or max(alpha.values()) < 150:", "    if False:", f"{P}::test_scanned_pdf_has_no_text_layer", "text-layer check"),
     ("health.py", "    if len(oks) < 3:\n        checks.append(Check(\"extractors\"", "    if False:\n        checks.append(Check(\"extractors\"", f"{P}::test_fewer_than_three_extractors_cannot_be_compared", "extractor-count check"),
     ("health.py", "lambda p: p.email, \"Put", "lambda p: True, \"Put", f"{P}::test_missing_email_fails_under_every_view", "email check"),
@@ -171,13 +172,33 @@ MUTANTS = [
     ("cli.py", "    args.master = args.master or cfg.master\n", "    args.master = args.master\n", "tests/test_config.py::test_cli_takes_master_and_out_dir_from_the_file", "offersmith.toml master reaches the CLI"),
     ("cli.py", "        args.out = cfg.out_dir / args.resume.stem", "        pass", "tests/test_config.py::test_cli_takes_master_and_out_dir_from_the_file", "offersmith.toml out_dir reaches the CLI"),
     ("config.py", "    for k, var in ENV.items():", "    for k, var in ():", "tests/test_config.py::test_environment_beats_the_file", "environment overrides the file"),
+    # ---- optional OpenResume layer (these rows need the layer installed: tools/openresume/install.sh)
+    ("openresume.py", "    glued = glued_words(v, ref_text)", "    glued = []", f"{OR}::test_per_word_text_matrices_are_reported_as_glued_words_and_item_granularity", "OR (a): glued words"),
+    ("openresume.py", "    gran_bad = total >= GRANULARITY_MIN_ITEMS and share >= GRANULARITY_SHARE", "    gran_bad = False", f"{OR}::test_per_word_text_matrices_are_reported_as_glued_words_and_item_granularity", "OR (b): one pdf.js item per word"),
+    ("openresume.py", "    if nb >= 2 and unknown and sum(unknown.values()) >= nb / 2:", "    if False:", f"{OR}::test_a_dash_bullet_is_named_with_the_parsers_own_glyph_list", "OR (c): unknown bullet glyph"),
+    ("openresume.py", "    probs, n_cmp = entry_problems(v, parsed, skip)", "    probs, n_cmp = [], len(parsed.entries)", f"{OR}::test_a_vertical_gap_inside_one_role_is_reported_as_a_split_entry", "OR (d): split / empty-field entries"),
+    ("openresume.py", "    ep = education_problems(v, parsed)", "    ep = []", f"{OR}::test_degree_and_school_on_one_bold_line_are_reported_empty", "OR (e): school / degree empty"),
+    ("openresume.py", "    straddles = [s for s in page_straddles(v) if _is_header_like(s[\"after\"], parsed)]", "    straddles = []", f"{OR}::test_a_role_header_glued_onto_a_page_break_is_labelled_an_openresume_limitation_and_not_a_missing_role", "OR (f): header glued at a page break"),
+    ("openresume.py", "    skip = [s[\"after\"] for s in straddles]", "    skip = []", f"{OR}::test_a_role_header_glued_onto_a_page_break_is_labelled_an_openresume_limitation_and_not_a_missing_role", "OR (f): a glued role is not also reported missing in (d)"),
+    ("openresume.py", "    mail, other = contact_problems(v, parsed)", "    mail, other = [], []", f"{OR}::test_an_email_that_openresume_reads_wrongly_is_a_fail", "OR (g): contact fields"),
+    ("openresume.py", "\"NODE_OPTIONS\": (opts + \" \" + NODE_FLAG).strip()}", "\"NODE_OPTIONS\": opts}", f"{OR}::test_the_runner_is_started_with_code_generation_from_strings_disabled_and_refuses_to_run_without_it", "OR: the runner runs with code generation from strings disabled (pdfjs CVE-2024-4367)"),
+    ("openresume.py", "    why = missing_reason(h)", "    why = \"\"", f"{OR}::test_a_missing_install_is_one_warn_that_names_the_install_command", "OR: a missing install is a WARN with the install command"),
+    ("health.py", "    or_checks, or_raw = orl.checks(pdf, ref_text, parsed.get(match_view)) if ref_text else ([], None)", "    or_checks, or_raw = [], None", f"{OR}::test_the_clean_base_resume_passes_every_openresume_check", "OR: health.run calls the layer"),
+    ("score.py", "\"or_layer\", \"or_page_boundary\")", "\"or_layer\")", f"{OR}::test_the_limitation_and_the_skipped_layer_are_not_listed_as_fixes_to_the_resume", "OR: the page-break limitation is not a resume fix"),
+    ("report.py", "    if orc:\n", "    if False:\n", f"{OR}::test_the_report_and_report_json_carry_the_openresume_findings", "OR: report.md section"),
+    ("cli.py", "\"openresume\": H.openresume and", "\"openresume\": None and", f"{OR}::test_the_report_and_report_json_carry_the_openresume_findings", "OR: report.json carries the layer output"),
 ]
 
 
 def main() -> int:
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     survived = []
-    for fname, anchor, repl, test, what in MUTANTS:
+    from ats_check import openresume
+    or_off = bool(openresume.home() is None or openresume.missing_reason(openresume.home()))
+    todo = [m for m in MUTANTS if not (or_off and m[3].startswith(OR))]
+    if len(todo) != len(MUTANTS):
+        print(f"SKIPPED {len(MUTANTS) - len(todo)} OpenResume rows: layer not installed (sh tools/openresume/install.sh, or set ATS_CHECK_OPENRESUME)")
+    for fname, anchor, repl, test, what in todo:
         path = PKG / fname
         src = path.read_text()
         if src.count(anchor) != 1:
@@ -197,7 +218,7 @@ def main() -> int:
     # baseline must be green again
     base = subprocess.run(["uv", "run", "--quiet", "python", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"], cwd=ROOT, env=env, capture_output=True, text=True)
     print("baseline after restore:", "green" if base.returncode == 0 else "RED")
-    print(f"{len(MUTANTS) - len(survived)}/{len(MUTANTS)} killed")
+    print(f"{len(todo) - len(survived)}/{len(todo)} killed")
     return 0 if not survived and base.returncode == 0 else 1
 
 
