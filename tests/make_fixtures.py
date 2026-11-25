@@ -191,12 +191,15 @@ def or_education(oneline=False):
     return f"#sech[EDUCATION]\n#grid(columns: (1fr, auto), [*{sch}*], [{y}])\n{d}\n"
 
 
-def or_resume(gap=False, dash=False, oneline_edu=False, pagebreak=False):
+def or_resume(gap=False, dash=False, oneline_edu=False, pagebreak=False, background=False):
     pre = PRE(False)
     if dash:
         pre += '#set list(marker: [–])\n'
     jobs = [or_job(OR_JOBS[0], gap=gap), ("#pagebreak()\n" if pagebreak else "#v(0.9em)\n") + or_job(OR_JOBS[1])]
-    return (pre + header() + summary() + "#sech[EXPERIENCE]\n" + "".join(jobs) + or_education(oneline_edu) + skills())
+    head = header()
+    if background:   # a heading OpenResume does not take for work experience, and a comma right after the email
+        head = head.replace(f"{EMAIL} · {PHONE}", f"{EMAIL}, +1 {PHONE}")
+    return (pre + head + summary() + f"#sech[{'PROFESSIONAL BACKGROUND' if background else 'EXPERIENCE'}]\n" + "".join(jobs) + or_education(oneline_edu) + skills())
 
 
 def wordwise(src: Path, dst: Path):
@@ -244,6 +247,7 @@ def main():
         "or_gap": or_resume(gap=True),
         "or_oneline_edu": or_resume(oneline_edu=True),
         "or_pagebreak": or_resume(pagebreak=True),
+        "or_background": or_resume(background=True),
     })
     for name, src in jobs.items():
         compile_typ(src, OUT / f"{name}.pdf")

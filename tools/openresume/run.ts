@@ -20,6 +20,40 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const req = createRequire(join(HERE, "package.json"));
 (globalThis as any).pdfjsWorker = req("pdfjs-dist/build/pdf.worker.js");
 
+// SECOND LAYER and page bookkeeping, without editing any OpenResume source: pdf.js exports getDocument through a non-configurable getter, so
+// the module's entry in the require cache is swapped for a copy whose getDocument (1) passes isEvalSupported: false, the advisory's own
+// workaround, and (2) records the text items of every page, so the PDF is parsed once and the page ends are known.
+const real = req("pdfjs-dist");
+const getDocumentParams: any[] = [];
+const pages: { items: number; lastHasEOL: boolean }[] = [];
+const patched: any = {};
+for (const k of Object.keys(real).filter((k) => k !== "getDocument")) Object.defineProperty(patched, k, { enumerable: true, get: () => real[k] });
+Object.defineProperty(patched, "getDocument", {
+  enumerable: true,
+  value: (src: any) => {
+    const params = { ...(typeof src === "string" ? { url: src } : src), isEvalSupported: false };
+    getDocumentParams.push({ isEvalSupported: params.isEvalSupported });
+    const task = real.getDocument(params);
+    const promise = task.promise.then((doc: any) => {
+      const getPage = doc.getPage.bind(doc);
+      doc.getPage = async (n: number) => {
+        const page = await getPage(n);
+        const getTextContent = page.getTextContent.bind(page);
+        page.getTextContent = async (...a: any[]) => {
+          const tc = await getTextContent(...a);
+          const kept = tc.items.filter((i: any) => !(!i.hasEOL && i.str.trim() === ""));   // the filter readPdf applies
+          pages[n - 1] = { items: kept.length, lastHasEOL: kept.length ? !!kept[kept.length - 1].hasEOL : true };
+          return tc;
+        };
+        return page;
+      };
+      return doc;
+    });
+    return { promise, destroy: () => task.destroy() };
+  },
+});
+req.cache[req.resolve("pdfjs-dist")]!.exports = patched;
+
 const { readPdf } = await import("lib/parse-resume-from-pdf/read-pdf");
 const { groupTextItemsIntoLines } = await import("lib/parse-resume-from-pdf/group-text-items-into-lines");
 const { groupLinesIntoSections } = await import("lib/parse-resume-from-pdf/group-lines-into-sections");
@@ -33,19 +67,10 @@ const lines = groupTextItemsIntoLines(items);
 const sections = groupLinesIntoSections(lines);
 const resume = extractResumeFromSections(sections);
 
-// pages: readPdf concatenates every page's items; count them per page (same empty-space filter) to know where a page ends
-const pdfjs = req("pdfjs-dist");
-const doc = await pdfjs.getDocument(file).promise;
-const pages: { items: number; lastHasEOL: boolean }[] = [];
-for (let p = 1; p <= doc.numPages; p++) {
-  const tc = await (await doc.getPage(p)).getTextContent();
-  const kept = tc.items.filter((i: any) => !(!i.hasEOL && i.str.trim() === ""));
-  pages.push({ items: kept.length, lastHasEOL: kept.length ? !!kept[kept.length - 1].hasEOL : true });
-}
-
 const r1 = (n: number) => Math.round(n * 10) / 10;
 console.log(JSON.stringify({
   bulletPoints: BULLET_POINTS,
+  getDocumentParams,
   resume,
   pages,
   raw: items.map((i) => [i.text, r1(i.x), r1(i.y), r1(i.width), r1(i.height), String(i.fontName), i.hasEOL ? 1 : 0]),

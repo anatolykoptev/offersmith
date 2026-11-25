@@ -3,7 +3,7 @@ consensus of our own extractors. It is a second, independent reader of the same 
 defects the text-only extractors do not (glued words, bullets it does not know, a role split in two, a header glued onto a page break).
 
 The parser is fetched by `tools/openresume/install.sh` (never vendored here) and run by `tools/openresume/run.ts`. Absent Node or the
-install = the layer is skipped with a WARN naming the install command, never a FAIL. `ATS_CHECK_OPENRESUME=off` disables it silently.
+install = the layer is skipped with a WARN naming the install command, never a FAIL, and none of its findings is a FAIL either (see docs/ats-check.md). `ATS_CHECK_OPENRESUME=off` disables it silently.
 """
 from __future__ import annotations
 
@@ -11,22 +11,28 @@ import json
 import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
+import threading
 import unicodedata
 from collections import Counter
 from pathlib import Path
 
 from . import fields as fd
-from .health import FAIL, PASS, WARN, Check
-from .llm import CACHE
+from .health import PASS, WARN, Check
 
 ENV = "ATS_CHECK_OPENRESUME"
+OFF = ("off", "0", "false", "no")
+PINNED_SHA = "4f8255a2c763479837f69f1dccf2a3338730cd79"       # the same commit as SHA in tools/openresume/install.sh (a test compares them)
 TIMEOUT = 120
-# a PDF whose body lines are mostly one pdf.js item per word (font expansion, per-word text matrices) is read by OpenResume as glued text
+MAX_STDOUT = 32 * 1024 * 1024
+MAX_STDERR = 64 * 1024
+# a PDF whose body lines are mostly one pdf.js item per word (font expansion, per-word text matrices) is read by parsers that join items by distance as glued text
 GRANULARITY_SHARE = 0.5
-GRANULARITY_MIN_ITEMS = 12
+GRANULARITY_MIN_ITEMS = 24
 BODY_LINE_WORDS = 6
-GLUE_MIN_LETTERS = 8
+GLUE_MIN_LETTERS = 6
 GLUE_MAX_WORDS = 6
 INSTALL_SH = Path(__file__).resolve().parents[1] / "tools" / "openresume" / "install.sh"
 
@@ -36,11 +42,13 @@ class RunnerError(Exception):
 
 
 def home() -> Path | None:
-    """The install folder, or None when the layer is switched off."""
+    """The install folder as an absolute path, or None when the layer is switched off. `off` is never a path. install.sh --print-dir
+    resolves the same way (a test compares them)."""
     v = (os.environ.get(ENV) or "").strip()
-    if v.lower() in ("off", "0", "false", "no"):
+    if v.lower() in OFF:
         return None
-    return Path(v).expanduser() if v else CACHE / "openresume"
+    cache = Path(os.environ.get("ATS_CHECK_CACHE") or Path.home() / ".cache" / "ats-check")
+    return (Path(v).expanduser() if v else cache / "openresume").absolute()
 
 
 def install_command() -> str:
@@ -48,43 +56,136 @@ def install_command() -> str:
     return f"sh {sh}"
 
 
+def _git(h: Path, *args: str) -> str | None:
+    try:
+        p = subprocess.run(["git", "-C", str(h / "open-resume"), *args], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
 def missing_reason(h: Path) -> str:
+    """"" when the layer can run, else why not. The install folder is code we execute, so it must be ours alone and the upstream checkout must be
+    the pinned commit with no local change."""
     if not shutil.which("node"):
         return "node is not on PATH"
     if not (h / "node_modules" / ".bin" / "tsx").exists() or not (h / "run.ts").exists() or not (h / "open-resume" / "tsconfig.json").exists():
         return f"not installed in {h}"
+    try:
+        st = h.stat()
+    except OSError:
+        return f"not installed in {h}"
+    if st.st_uid != os.getuid() or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"{h} is writable by someone else (or not owned by you); it holds code that is run"
+    if (_git(h, "rev-parse", "HEAD") or "").strip() != PINNED_SHA:
+        return f"the OpenResume checkout in {h} is not the pinned commit {PINNED_SHA[:12]}"
+    if _git(h, "status", "--porcelain", "--untracked-files=all") != "":
+        return f"the OpenResume checkout in {h} has local changes"
     return ""
 
 
 def version(h: Path) -> str:
-    try:
-        return (h / "INSTALLED").read_text().strip()[:12]
-    except OSError:
-        return "?"
+    return PINNED_SHA[:12]
 
 
 # pdfjs-dist 3.7.107 (pinned to OpenResume's) runs JavaScript from a crafted PDF font through `new Function` (GHSA-wgrm-67xf-hhpq):
-# with code generation from strings disabled pdf.js cannot take that path, and run.ts refuses to start without the flag
+# with code generation from strings disabled pdf.js cannot take that path, and run.ts refuses to start without the flag. run.ts also passes
+# isEvalSupported: false to pdf.js (the advisory's own workaround), so the flag is the second layer, not the only one.
 NODE_FLAG = "--disallow-code-generation-from-strings"
 
 
 def _env() -> dict:
-    opts = os.environ.get("NODE_OPTIONS", "")
-    return {**os.environ, "NODE_NO_WARNINGS": "1", "NODE_OPTIONS": (opts + " " + NODE_FLAG).strip()}
+    """Only what node needs: no inherited NODE_OPTIONS (a --require/--import there runs before the runner's guard) and no credentials."""
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL") if k in os.environ}
+    return {**env, "NODE_NO_WARNINGS": "1", "NODE_OPTIONS": NODE_FLAG}
+
+
+def _kill_group(p: subprocess.Popen) -> None:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)       # the launcher (tsx) and the node it started share the group
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _run_bounded(cmd: list[str], cwd: Path) -> tuple[int, bytes, bytes]:
+    """Run `cmd` in its own process group with a deadline and byte caps on both streams. Whatever happens, the whole group is killed and reaped."""
+    p = subprocess.Popen(cmd, cwd=cwd, env=_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    bufs = {"out": bytearray(), "err": bytearray()}
+    over: list[str] = []
+
+    def pump(stream, key: str, cap: int) -> None:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                return
+            bufs[key] += chunk
+            if len(bufs[key]) > cap:
+                over.append(key)
+                _kill_group(p)
+                return
+
+    threads = [threading.Thread(target=pump, args=(p.stdout, "out", MAX_STDOUT), daemon=True),
+               threading.Thread(target=pump, args=(p.stderr, "err", MAX_STDERR), daemon=True)]
+    for t in threads:
+        t.start()
+    try:
+        p.wait(timeout=TIMEOUT)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        _kill_group(p)
+        p.wait()
+        for t in threads:
+            t.join(timeout=5)
+        p.stdout.close()
+        p.stderr.close()
+    if timed_out:
+        raise RunnerError(f"timed out after {TIMEOUT}s")
+    if over:
+        raise RunnerError(f"{'stdout' if over[0] == 'out' else 'stderr'} exceeds the {(MAX_STDOUT if over[0] == 'out' else MAX_STDERR) // 1024} KiB limit")
+    return p.returncode, bytes(bufs["out"]), bytes(bufs["err"])
+
+
+def _validate(d) -> None:
+    """The payload shape the comparisons rely on; anything else is a RunnerError, not an exception later."""
+    def need(ok: bool, what: str) -> None:
+        if not ok:
+            raise RunnerError(f"runner output has no valid {what}")
+    need(isinstance(d, dict), "object")
+    res = d.get("resume")
+    need(isinstance(res, dict), "resume")
+    prof = res.get("profile")
+    need(isinstance(prof, dict) and all(isinstance(prof.get(k), str) for k in ("name", "email", "phone", "location")), "resume.profile")
+    need(isinstance(res.get("workExperiences"), list) and all(
+        isinstance(w, dict) and all(isinstance(w.get(k), str) for k in ("company", "jobTitle", "date"))
+        and isinstance(w.get("descriptions"), list) and all(isinstance(x, str) for x in w["descriptions"]) for w in res["workExperiences"]), "resume.workExperiences")
+    need(isinstance(res.get("educations"), list) and all(
+        isinstance(e, dict) and all(isinstance(e.get(k), str) for k in ("school", "degree")) for e in res["educations"]), "resume.educations")
+    need(isinstance(d.get("bulletPoints"), list) and all(isinstance(x, str) for x in d["bulletPoints"]), "bulletPoints")
+    need(isinstance(d.get("pages"), list) and all(isinstance(x, dict) and isinstance(x.get("items"), int) for x in d["pages"]), "pages")
+    need(isinstance(d.get("raw"), list) and all(isinstance(r, list) and len(r) >= 7 and isinstance(r[0], str) for r in d["raw"]), "raw items")
+    need(isinstance(d.get("lines"), list) and all(
+        isinstance(l, dict) and (l.get("start") is None or isinstance(l["start"], int)) and isinstance(l.get("items"), list)
+        and all(isinstance(i, list) and len(i) >= 5 and isinstance(i[0], str) for i in l["items"]) for l in d["lines"]), "lines")
 
 
 def run_runner(pdf: Path, h: Path) -> dict:
     cmd = [str(h / "node_modules" / ".bin" / "tsx"), "--tsconfig", str(h / "open-resume" / "tsconfig.json"), str(h / "run.ts"), str(pdf.resolve())]
     try:
-        p = subprocess.run(cmd, cwd=h, capture_output=True, text=True, timeout=TIMEOUT, env=_env())
-    except (OSError, subprocess.TimeoutExpired) as e:
+        code, out, err = _run_bounded(cmd, h)
+    except OSError as e:
         raise RunnerError(str(e)[:200])
-    if p.returncode != 0:
-        raise RunnerError((p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1][:200])
+    if code != 0:
+        tail = err.decode("utf-8", "replace").strip().splitlines()
+        raise RunnerError((tail[-1] if tail else f"exit {code}")[:200])
+    lines = [l for l in out.split(b"\n") if l.strip()]       # frame on the real newline: JSON may hold U+2028; pdf.js prints its warnings to stdout, the JSON is the last line
     try:
-        return json.loads(p.stdout.strip().splitlines()[-1])        # pdf.js prints its warnings to stdout; the JSON is the last line
-    except (ValueError, IndexError) as e:
-        raise RunnerError(f"runner output is not JSON: {e}")
+        d = json.loads(lines[-1].decode("utf-8"))
+    except (ValueError, IndexError) as e:                    # UnicodeDecodeError is a ValueError
+        raise RunnerError(f"runner output is not JSON: {e}"[:200])
+    _validate(d)
+    return d
 
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
@@ -135,22 +236,25 @@ class View:
 
 # ---- (a) glued words -------------------------------------------------------------------------------------------------
 def _consensus_concats(text: str) -> tuple[set[str], dict[str, str]]:
-    shown = re.findall(r"[^\W_]+", _nfkc(text))
-    toks = [t.lower() for t in shown]
-    singles = set(toks)
+    """(every word of the text, every run of 2-6 consecutive words of ONE line joined together -> the words as written)."""
+    singles: set[str] = set()
     cat: dict[str, str] = {}
-    for i in range(len(toks)):
-        s = toks[i]
-        for j in range(i + 1, min(i + GLUE_MAX_WORDS, len(toks))):
-            s += toks[j]
-            if len(s) >= GLUE_MIN_LETTERS:
-                cat.setdefault(s, " ".join(shown[i:j + 1]))
+    for line in text.replace("\f", "\n").splitlines():
+        shown = re.findall(r"[^\W_]+", _nfkc(line))
+        toks = [t.lower() for t in shown]
+        singles.update(toks)
+        for i in range(len(toks)):
+            joined = toks[i]
+            for j in range(i + 1, min(i + GLUE_MAX_WORDS, len(toks))):
+                joined += toks[j]
+                if len(joined) >= GLUE_MIN_LETTERS:
+                    cat.setdefault(joined, " ".join(shown[i:j + 1]))
     return singles, cat
 
 
 def glued_words(v: View, ref_text: str) -> list[tuple[str, str, str]]:
     """(word as OpenResume read it, the words the text layer has, its line). A token OpenResume produced that no extractor has as a
-    word, but that equals 2-6 consecutive words of the consensus text, is words glued together."""
+    word, but that equals 2-6 consecutive words of one consensus line, is words glued together."""
     singles, cat = _consensus_concats(ref_text)
     out, seen = [], set()
     for li, l in enumerate(v.lines):
@@ -165,14 +269,14 @@ def glued_words(v: View, ref_text: str) -> list[tuple[str, str, str]]:
 
 # ---- (b) item granularity --------------------------------------------------------------------------------------------
 def granularity(v: View) -> tuple[int, int, float]:
-    """(single-word items, all word items, share) over body lines, i.e. lines of >= BODY_LINE_WORDS words."""
+    """(items without any whitespace, all items with a letter or digit, share) over body lines, i.e. lines of >= BODY_LINE_WORDS words."""
     single = total = 0
     for _, s, e in v.ranges:
         items = [r[0] for r in v.raw[s:e] if re.search(r"\w", r[0])]
         if sum(len(t.split()) for t in items) < BODY_LINE_WORDS:
             continue
         total += len(items)
-        single += sum(1 for t in items if len(t.split()) == 1)
+        single += sum(1 for t in items if not re.search(r"\s", t))      # an item that carries its own space is not a word on its own
     return single, total, (single / total if total else 0.0)
 
 
@@ -181,6 +285,17 @@ def consensus_bullets(parsed: fd.Parsed) -> Counter:
     ex = parsed.section("experience")
     lines = parsed.lines[ex.start:ex.end] if ex else parsed.lines
     return Counter(l[0] for l in lines if fd.is_bullet(l))
+
+
+def bullet_finding(bl: Counter, known: set[str], descs: int) -> tuple[str, int, int] | None:
+    """(glyph, its count, bullet lines) when most bullet lines start with a glyph OpenResume does not know AND it did not come out with one
+    description per bullet anyway; else None."""
+    nb = sum(bl.values())
+    unknown = {g: n for g, n in bl.items() if g not in known}
+    if nb >= 2 and unknown and sum(unknown.values()) >= nb / 2 and descs != nb:
+        g, n = max(unknown.items(), key=lambda kv: kv[1])
+        return g, n, nb
+    return None
 
 
 # ---- (f) page boundary -----------------------------------------------------------------------------------------------
@@ -227,7 +342,10 @@ def entry_problems(v: View, parsed: fd.Parsed, skip_headers: list[str]) -> tuple
         sig = _sig(ce.dates_raw)
         if not sig[0]:
             continue
-        k = next((i for i, w in enumerate(work) if i not in used and _sig(w["date"]) == sig), None)
+        same = [i for i, w in enumerate(work) if i not in used and _sig(w["date"]) == sig]
+        # concurrent roles share a year signature: prefer the entry whose own text names this role's title or company
+        named = [i for i in same if any(t and _norm(t) in _norm(work[i]["jobTitle"] + work[i]["company"]) for t in (ce.title, ce.company))]
+        k = (named or same or [None])[0]
         if k is None:
             probs.append(f"no OpenResume entry has the dates of '{_q(ce.header, 60)}'")
             continue
@@ -308,21 +426,30 @@ def checks(pdf: Path, ref_text: str, parsed: fd.Parsed | None) -> tuple[list[Che
     out = [Check("or_layer", title, PASS, [f"OpenResume {version(h)} read {len(v.raw)} pdf.js text items in {len(v.lines)} lines"])]
     if parsed is None:
         return out, d
+    try:
+        return out + _compare(v, ref_text, parsed), d
+    except Exception as e:      # an optional layer must not take the check down; the payload was validated, so this would be a bug here
+        return [Check("or_layer", title, WARN, [f"OpenResume comparison failed: {type(e).__name__}: {e}"[:200]], f"Report it; silence with {ENV}=off.")], None
+
+
+def _compare(v: View, ref_text: str, parsed: fd.Parsed) -> list[Check]:
+    out: list[Check] = []
 
     # (b) granularity first: it is the root cause the other findings point at
     single, total, share = granularity(v)
     gran_bad = total >= GRANULARITY_MIN_ITEMS and share >= GRANULARITY_SHARE
+    glued = glued_words(v, ref_text)
     if gran_bad:
         ex = next((" | ".join(r[0] for r in v.raw[s:e]) for _, s, e in v.ranges if len([r for r in v.raw[s:e] if re.search(r"\w", r[0])]) >= BODY_LINE_WORDS), "")
         out.append(Check("or_granularity", "pdf.js reads whole lines, not one item per word", WARN,
                          [f"{single} of {total} text items on body lines are a single word ({share:.0%}); one line as pdf.js items: {_q(ex, 110)}"],
-                         "Every word has its own text matrix (font expansion / microtype, per-word positioning), so parsers that join items by distance glue or split words. "
+                         "Most words arrive as separate pdf.js items (font expansion / microtype, per-word positioning), so a parser that joins items by distance can glue or split words"
+                         + ("" if glued else " (none are glued in this file, but it depends on the gaps)") + ". "
                          "Turn font expansion off (LaTeX: microtype `expansion=false`) or re-export with line-level text runs."))
     else:
         out.append(Check("or_granularity", "pdf.js reads whole lines, not one item per word", PASS, [f"{single} of {total} items on body lines are a single word ({share:.0%})"] if total else []))
 
     # (a) glued words
-    glued = glued_words(v, ref_text)
     if glued:
         out.append(Check("or_glued", "Words stay separate in OpenResume's text", WARN,
                          [f"{len(glued)} words glued together; first {min(3, len(glued))}:"] +
@@ -335,11 +462,11 @@ def checks(pdf: Path, ref_text: str, parsed: fd.Parsed | None) -> tuple[list[Che
     # (c) bullets
     bl = consensus_bullets(parsed)
     known = set(v.bullets)
-    unknown = {g: n for g, n in bl.items() if g not in known}
     nb = sum(bl.values())
     descs = sum(len(w["descriptions"]) for w in v.resume["workExperiences"])
-    if nb >= 2 and unknown and sum(unknown.values()) >= nb / 2:
-        g, n = max(unknown.items(), key=lambda kv: kv[1])
+    bf = bullet_finding(bl, known, descs)
+    if bf:
+        g, n, nb = bf
         out.append(Check("or_bullets", "OpenResume recognises the bullet glyph", WARN,
                          [f"{n} of {nb} bullet lines in Experience start with {_glyph(g)}, which is not in OpenResume's bullet list; it found {descs} descriptions for {nb} bullets",
                           "OpenResume's list: " + " ".join(v.bullets)],
@@ -361,13 +488,14 @@ def checks(pdf: Path, ref_text: str, parsed: fd.Parsed | None) -> tuple[list[Che
     # (d) entries
     probs, n_cmp = entry_problems(v, parsed, skip)
     n_or = len(v.resume["workExperiences"])
-    lost = bool(parsed.entries) and n_or == 0
-    if lost:
-        probs.insert(0, f"OpenResume found no work entry; the consensus parse has {len(parsed.entries)}")
+    if n_cmp and n_or == 0:
+        sec = parsed.section("experience")
+        probs[:] = [f"OpenResume found no work entry; the consensus parse has {n_cmp}"
+                     + (f" (it finds the work section only by the words work, experience, employment, history or job in its heading; the heading here is '{_q(sec.title, 40)}')" if sec else "")]
     elif n_or != n_cmp and not probs:
         probs.append(f"OpenResume found {n_or} work entries; the consensus parse has {n_cmp}")
     if probs:
-        out.append(Check("or_entries", "OpenResume reads each job's title, company and dates", FAIL if lost else WARN,
+        out.append(Check("or_entries", "OpenResume reads each job's title, company and dates", WARN,
                          probs[:4] + ([f"(+{len(probs) - 4} more)"] if len(probs) > 4 else []),
                          "Keep the lines of one role at one line spacing, put the job title on the header line as a plain word from a standard title (no trailing comma on it), then dates on the same line."))
     else:
@@ -382,12 +510,9 @@ def checks(pdf: Path, ref_text: str, parsed: fd.Parsed | None) -> tuple[list[Che
 
     # (g) contact
     mail, other = contact_problems(v, parsed)
-    if mail:
-        out.append(Check("or_contact", "OpenResume reads the contact fields", FAIL, mail + other,
-                         "Put the email on its own line or separated by ' | ' from the other contact items; an email OpenResume cannot read cannot be shown to a recruiter."))
-    elif other:
-        out.append(Check("or_contact", "OpenResume reads the contact fields", WARN, other,
-                         "Separate contact items with ' | ' or a line break so each is its own text run."))
+    if mail or other:
+        out.append(Check("or_contact", "OpenResume reads the contact fields", WARN, mail + other,
+                         "Put the email on its own line or separate contact items with ' | ' so each is its own text run; a parser that cannot read the email cannot show it to a recruiter."))
     else:
         out.append(Check("or_contact", "OpenResume reads the contact fields", PASS))
-    return out, d
+    return out
