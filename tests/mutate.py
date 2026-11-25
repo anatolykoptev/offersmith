@@ -171,6 +171,15 @@ MUTANTS = [
     ("cli.py", "    args.master = args.master or cfg.master\n", "    args.master = args.master\n", "tests/test_config.py::test_cli_takes_master_and_out_dir_from_the_file", "offersmith.toml master reaches the CLI"),
     ("cli.py", "        args.out = cfg.out_dir / args.resume.stem", "        pass", "tests/test_config.py::test_cli_takes_master_and_out_dir_from_the_file", "offersmith.toml out_dir reaches the CLI"),
     ("config.py", "    for k, var in ENV.items():", "    for k, var in ():", "tests/test_config.py::test_environment_beats_the_file", "environment overrides the file"),
+    # ---- entry parser: a wrapped bullet line or a page footer is not a job
+    ("fields.py", "        if t and not PAGE_NUMBER.fullmatch(t):", "        if t:", f"{P}::test_a_page_number_line_is_dropped_not_an_entry", "a bare page-number line is dropped from parsing"),
+    ("fields.py", "        if t and not PAGE_NUMBER.fullmatch(t):", "        if t:", f"{P}::test_wrapped_bullets_and_page_footer_do_not_become_jobs", "page footer between two bullets is not a job (real extractors)"),
+    ("fields.py", "        if in_bullet and cur and _continues_bullet(ln, rest, raw, prob):", "        if False and in_bullet and cur and _continues_bullet(ln, rest, raw, prob):", f"{P}::test_a_wrapped_bullet_line_with_a_date_is_not_an_entry", "a wrapped bullet line is not a role header"),
+    ("fields.py", "        if in_bullet and cur and _continues_bullet(ln, rest, raw, prob):", "        if False and in_bullet and cur and _continues_bullet(ln, rest, raw, prob):", f"{P}::test_wrapped_bullets_and_page_footer_do_not_become_jobs", "a wrapped dated line is not a job (real extractors)"),
+    ("fields.py", "    if _lowercase_start(ln):\n        return True", "    if False:\n        return True", f"{P}::test_a_short_undated_wrapped_tail_before_the_next_bullet_is_not_an_entry", "continuation: a line that starts lowercase"),
+    ("fields.py", "    if _lowercase_start(rest):  # the text beside the date is prose, not 'Title, Company'\n        return True", "    if False:\n        return True", f"{P}::test_a_short_wrapped_line_that_opens_with_a_month_is_not_an_entry", "continuation: prose beside the date"),
+    ("fields.py", "    return prob == \"single date, no range\" and ln.endswith(\".\") and len(rest.split()) >= 8", "    return False", f"{P}::test_a_wrapped_bullet_line_with_a_date_is_not_an_entry", "continuation: a sentence-length line with one date"),
+    ("fields.py", "    return s[:1].islower() and not s[1:2].isupper()", "    return s[:1].islower()", f"{P}::test_a_role_header_right_after_a_bullet_is_still_an_entry", "a lowercase brand header (iOS Engineer) is still a header"),
 ]
 
 

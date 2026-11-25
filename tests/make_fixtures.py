@@ -118,6 +118,33 @@ def skills_image():
     return PRE(False) + header() + summary() + experience() + education() + '#sech[SKILLS]\n#image("skills.png", width: 70%)\n'
 
 
+# Line shapes seen in a real 2-page LaTeX resume under the line-based extractors: a bullet whose wrapped
+# continuation line carries a date (lowercase start, month-name start, year at the end), and a bare "1/2" page
+# footer between two bullets of one role. Explicit line breaks pin the wrap points, so every extractor sees them.
+WRAPPED_JOBS = [
+    ("Senior AI Engineer", "Acme Robotics", "Jan 2022 – Present", [
+        "In a benchmark of 15 buyer questions, an AI assistant named Acme in 15 of 15 answers, and\\ of them first in 10, in a November 2026 re-test; Jane built its site and profile.",
+        "Ran a gap analysis of which buyer questions AI answers covered without Acme, then set the\\ content strategy for them: answer pages with linked supporting pages.",
+        "Moved the outside writing and design work to AI agents under Jane's briefs and review: a\\ fact-checker and a readability editor check each page before it is published.",
+        "Grew the docs site to 1.2M visits through a rewrite of its structure; the work started in\\ November 2024, and has been done by Jane hands-on for 10+ years.",
+        "Led the editorial team of three to five as editor-in-chief from 2019 to 2021, briefing its writers\\ editing their work, and led editorial work again by 2022.",
+        "Designed an evaluation harness that gates every release and a retrieval pipeline on pgvector.",
+    ]),
+    ("Software Engineer", "Globex Corporation", "Mar 2019 – Dec 2021", [
+        "Owned the billing workflow service in Go; reduced incident count by half.",
+        "Built a certified office-document pipeline for finance customers on PostgreSQL.",
+    ]),
+]
+
+
+def wrapped():
+    j1, j2 = WRAPPED_JOBS
+    pre = PRE(False).replace('margin: (x: 18mm, y: 16mm))', 'margin: (x: 18mm, y: 16mm), footer: align(right)[#context counter(page).display("1/1", both: true)])')
+    b1, b2 = j1[3][:3], j1[3][3:]
+    role1 = f"#grid(columns: (1fr, auto), [*{j1[0]}*, {j1[1]}], [{j1[2]}])\n{bullets(b1)}\n#pagebreak()\n{bullets(b2)}\n"
+    return pre + header() + summary() + "#sech[EXPERIENCE]\n" + role1 + job_block(j2) + education() + skills()
+
+
 def compile_typ(src: str, out: Path, fmt="pdf", ppi=None):
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "x.typ"
@@ -183,6 +210,7 @@ def main():
         "dates_season": clean(season=True),
         "skills_image": skills_image(),
         "icon_contact": clean(icons=True),
+        "wrapped_bullets": wrapped(),
     }
     for name, src in jobs.items():
         compile_typ(src, OUT / f"{name}.pdf")

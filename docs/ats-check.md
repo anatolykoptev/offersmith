@@ -187,7 +187,8 @@ Apache Tika was dropped (it needs a JVM, which flashes a Dock icon on macOS).
 
 `tests/fixtures/*.pdf` (all about a made-up candidate, Jane Q. Example) are generated with `typst` (`uv run python tests/make_fixtures.py`):
 clean (must pass everything), two-column, ruled table, contact only in page header, ligature code
-points, "My Journey" heading, "Spring '22" dates, skills as an image, icon glyphs, and a copy of the
+points, "My Journey" heading, "Spring '22" dates, skills as an image, icon glyphs, wrapped bullets with dated
+continuation lines plus a `1/2` page footer between two bullets (must parse as two jobs under every view), and a copy of the
 clean one with ToUnicode stripped. Each bad fixture trips its own check and a mutation proves it
 (`tests/mutate.py` edits one call site, the named test must go RED; every mutant is killed, run it to see the count). LLM layers are
 mocked (the CLI path is exercised by patching `llm.subprocess`, where the default runner is bound); the sandbox flags, canary logic and alias verification are unit-tested.

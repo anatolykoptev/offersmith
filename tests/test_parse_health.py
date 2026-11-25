@@ -183,3 +183,81 @@ def test_entries_fragile_is_always_a_check(run_health):
 
 def test_location_fragment_state_code_is_case_sensitive():
     assert fd.looks_like_location("Austin, TX") and not fd.looks_like_location("Acme Labs, ab")
+
+
+# ---- line-based extractors leave a wrapped bullet line and a page footer on rows of their own ------------------
+
+def test_wrapped_bullets_and_page_footer_do_not_become_jobs(run_health):
+    """Real line shapes (a dated wrapped line, a '1/2' footer between two bullets of one role) from a resume every
+    extractor read correctly: two jobs under every view, no parse FAIL, no entry-count WARN."""
+    h = run_health("wrapped_bullets")
+    assert {n: len(p.entries) for n, p in h.parsed.items()} == {n: 2 for n in h.parsed}
+    assert status(h, "entries") == PASS and status(h, "entries_fragile") == PASS
+    assert not h.gate_failed
+    assert [e.bullets for e in h.parsed["pdftotext-layout"].entries] == [6, 2]
+
+
+def _entries(*lines):
+    text = "Jane Q. Example\nSan Francisco, CA · jane@example.com\nEXPERIENCE\n" + "\n".join(lines) + "\nSKILLS\nPython, Go, Docker\n"
+    return fd.parse(text).entries
+
+
+JOB1 = "Senior AI Engineer, Acme Robotics  Jan 2022 – Present"
+JOB2 = "Software Engineer, Globex Corporation  Mar 2019 – Dec 2021"
+
+
+@pytest.mark.parametrize("wrapped", [
+    "of them first, in a November 2026 test of 15 questions; built its site and Google Business Profile.",  # lowercase, one date
+    "November 2026, and has done its SEO hands-on for 15+ years.",                                          # month first, prose after it
+    "editing their work, and led editorial work again by 2022.",                                            # lowercase, year at the end
+    "from 2019 to 2021, briefing its writers and checking every page before it went live.",                 # lowercase, looks like a range
+    "Nov 2026 GEO test of 15 car-owner questions named the shop first in ten of them, built by Jane.",      # capitalised, sentence-length
+])
+def test_a_wrapped_bullet_line_with_a_date_is_not_an_entry(wrapped):
+    es = _entries(JOB1, "• Built a thing that did a useful and measurable job for the client in the", wrapped, "• Shipped another.")
+    assert [e.header for e in es] == [JOB1] and es[0].bullets == 2 and es[0].dates_problem == ""
+
+
+def test_a_short_undated_wrapped_tail_before_the_next_bullet_is_not_an_entry():
+    """A bullet written without a closing full stop whose last wrapped row is short: no dates, next row a bullet."""
+    es = _entries(JOB1, "• Built a thing that did a useful and measurable job for the client in the", "and the other regions", "• Shipped another.")
+    assert [e.header for e in es] == [JOB1] and es[0].bullets == 2
+
+
+def test_a_short_wrapped_line_that_opens_with_a_month_is_not_an_entry():
+    es = _entries(JOB1, "• Built a thing that did a useful and measurable job for the client from", "November 2026, and she wrote.", "• Shipped another.")
+    assert [e.header for e in es] == [JOB1] and es[0].bullets == 2
+
+
+@pytest.mark.parametrize("footer", ["1/2", "2/2", "Page 1 of 2", "Page 3", "2", "12", "- 2 -"])
+def test_a_page_number_line_is_dropped_not_an_entry(footer):
+    es = _entries(JOB1, "• Built a thing for a client.", footer, "• Shipped another.")
+    assert [e.header for e in es] == [JOB1] and es[0].bullets == 2
+    assert footer not in fd.parse("Jane Q. Example\nx\nEXPERIENCE\n" + footer + "\n").lines
+
+
+def test_a_year_alone_on_a_line_is_not_a_page_number():
+    assert fd.clean_lines("2022\n1/2024\n05/2024") == ["2022", "1/2024", "05/2024"]
+
+
+@pytest.mark.parametrize("header", [
+    JOB2,                                          # a full header right after a bullet, no blank line
+    "iOS Engineer, Globex Corporation  2019 – 2021",   # a lowercase brand is not prose
+    "Mar 2019 – Dec 2021  Software Engineer, Globex",  # date first
+])
+def test_a_role_header_right_after_a_bullet_is_still_an_entry(header):
+    es = _entries(JOB1, "• Built a thing for a client.", header, "• Owned a service.")
+    assert [e.header for e in es] == [JOB1, header]
+
+
+def test_a_genuine_single_date_header_after_a_bullet_is_still_flagged():
+    es = _entries(JOB1, "• Built a thing for a client.", "Software Engineer, Globex Corporation  Mar 2019", "• Owned a service.")
+    assert len(es) == 2 and es[1].dates_problem == "single date, no range" and es[1].title == "Software Engineer"
+
+
+def test_a_header_glued_onto_the_previous_bullet_still_makes_the_counts_differ():
+    whole = _entries(JOB1, "• Built a thing for a client.", JOB2, "• Owned a service.")
+    glued = _entries(JOB1, "• Built a thing for a client. " + JOB2, "• Owned a service.")
+    assert (len(whole), len(glued)) == (2, 1)
+    c = next(c for c in health._field_checks({"a": fd.Parsed(entries=whole), "b": fd.Parsed(entries=glued)}) if c.id == "entries_fragile")
+    assert c.status == WARN

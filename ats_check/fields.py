@@ -33,6 +33,8 @@ LOC = re.compile(r"[A-Z][a-z.]+(?:[ \-][A-Z][a-z.]+)*,\s*(?:[A-Z]{2}\b|[A-Z][a-z
 LOC_FRAGMENT = re.compile(r"(?i:\b(?:Bay Area|Area|Remote|Hybrid|On-?site|Metro)$|^(?:in |and )|\band\b.*\b(?:Area|Remote)\b)|,\s*[A-Z]{2}$")
 DEGREE = re.compile(r"\b(b\.?s\.?c?\.?|b\.?a\.?|bachelor[’']?s?|master[’']?s?|m\.?s\.?c?\.?|m\.?b\.?a|ph\.?d|doctorate|associate|diploma|degree|b\.?eng|m\.?eng)\b", re.I)
 SCHOOL = re.compile(r"\b(university|college|institute|school|academy|polytechnic)\b", re.I)
+# a page footer alone on its line: '1/2', 'Page 1 of 2', 'Page 1', '1', '- 1 -' (not a year: '2022' has four digits)
+PAGE_NUMBER = re.compile(r"(?:(?:page\s+)?\d{1,3}(?:\s*(?:/|of)\s*\d{1,3})?|[-–—]\s*\d{1,3}\s*[-–—])", re.I)
 
 
 @dataclass
@@ -82,7 +84,7 @@ def clean_lines(text: str) -> list[str]:
     out = []
     for raw in text.replace("\f", "\n").splitlines():
         t = re.sub(r"\s{2,}", "  ", raw.replace("\xa0", " ")).strip()
-        if t:
+        if t and not PAGE_NUMBER.fullmatch(t):
             out.append(t)
     return out
 
@@ -217,19 +219,43 @@ def parse(text: str, style_headings: set[str] | None = None) -> Parsed:
     return P
 
 
+def _lowercase_start(s: str) -> bool:
+    """Prose starts lowercase; a brand does not count ('iOS Engineer', 'eBay Analyst': second letter upper)."""
+    return s[:1].islower() and not s[1:2].isupper()
+
+
+def _continues_bullet(ln: str, rest: str, raw: str, prob: str) -> bool:
+    """A non-bullet line right after a bullet that reads as more words of that bullet's sentence, not a role header:
+    the wrapped line a line-based extractor leaves on its own row ('of them first, in a November 2026 test',
+    'November 2026, and has done its SEO ...', 'Nov 2026 GEO test of 15 questions; built its site.')."""
+    if _lowercase_start(ln):
+        return True
+    if not raw:
+        return False
+    if _lowercase_start(rest):  # the text beside the date is prose, not 'Title, Company'
+        return True
+    return prob == "single date, no range" and ln.endswith(".") and len(rest.split()) >= 8
+
+
 def _entries(L: list[str], ex: Section) -> list[Entry]:
     out: list[Entry] = []
     i = ex.start
     cur: Entry | None = None
+    in_bullet = False  # the previous line is a bullet or a wrapped line of one
     while i < ex.end:
         ln = L[i]
         if is_bullet(ln):
             if cur:
                 cur.bullets += 1
                 cur.last_line = i
+            in_bullet = True
             i += 1
             continue
         rest, raw, a, b, ok, prob = split_dates(ln)
+        if in_bullet and cur and _continues_bullet(ln, rest, raw, prob):
+            cur.last_line = i
+            i += 1
+            continue
         has_date = bool(raw)
         words = len(ln.split())
         if has_date and words <= 25:
@@ -248,12 +274,14 @@ def _entries(L: list[str], ex: Section) -> list[Entry]:
             cur = Entry(header=title_line, title=t, company=c, dates_raw=raw, start=a, end=b, dates_ok=ok and not prob.startswith("unparse"),
                         dates_problem=prob, current=bool(re.fullmatch(NOW, (b or "").strip(), re.I)), first_line=first, last_line=i)
             out.append(cur)
+            in_bullet = False
         elif (not has_date and words <= 12 and not ln.endswith(".") and i + 1 < ex.end and is_bullet(L[i + 1])
               and (cur is None or cur.bullets > 0)):
             # undated header followed by bullets
             t, c = _title_company(ln)
             cur = Entry(header=ln, title=t, company=c, dates_problem="no dates found", first_line=i, last_line=i)
             out.append(cur)
+            in_bullet = False
         elif cur:
             cur.last_line = i
         i += 1
