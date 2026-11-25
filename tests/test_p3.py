@@ -199,6 +199,11 @@ def test_one_independent_draw_per_sample_cached_and_refreshable(cache):
     assert fake.calls == 10                                     # --refresh bypasses
 
 
+def test_each_grader_sample_has_its_own_cache_key():
+    """The keys, not the call count: the samples run in threads, and with one shared key the call count depends on which thread writes first."""
+    assert len({tuple(gr._sample_key(i, "")) for i in range(5)}) == 5 and len({tuple(gr._sample_key(0, s)) for s in ("a", "b")}) == 2
+
+
 def test_only_screenable_criteria_reach_the_grader_and_the_band(cache):
     c = crit(("AI/ML in product", "basic", True), ("comfortable with ambiguity", "basic", False))
     seen = []

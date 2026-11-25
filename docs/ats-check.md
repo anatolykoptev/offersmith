@@ -40,6 +40,23 @@ real master in this repository. Keep your own outside the repository.
    every extractor's text: name, email, phone, location, standard headings, per-job title +
    company + parseable dates, education, skills. Each is PASS / WARN / FAIL with evidence. **Any
    FAIL = verdict "FIX PARSING FIRST"**; nothing below it is trusted.
+
+   Which extracted row is a job header, a wrapped bullet row or a page footer is decided from page layout, not from
+   wording (`ats_check/layout.py`). The line-based extractors (poppler, pdfplumber, PDFium, PdfPig) hand over rows with no
+   position, and a wrapped bullet row can carry a date and read like a header ("November 2024, and has been done by Jane..."),
+   while a page number between two bullets reads like an undated one. PyMuPDF's visual rows are the authority: a row at the
+   bullet's text indent (right of the margin) is that bullet's wrapped text; a page number that is the first or last row of
+   its page and repeats at the same height on another page (or sits in the header/footer band), or a running footer repeating
+   in the band, is a footer; a role header starts at the margin, usually in bold or with a right-aligned part. Each extractor's
+   rows are projected onto these by their text (an extractor that joins a wrapped bullet into one paragraph takes the role of
+   its first row). Page numbers are skipped only inside the experience, skills and heading reading; the text every other check
+   and the matcher read keeps them (a phone split over rows, `SOC` / `2`). Rows the layout cannot place, a PDF with no text
+   layer, columns or tables, and a layout with no bullet indent (wrapped rows back at the margin, or the bullet text at the
+   margin) fall back to the line-shape reading as before. The layout only removes rows that cannot be headers (a wrapped row, a
+   footer); it never softens a FAIL on a row that remains, so every entries FAIL origin/main gave stands. A row counts as wrapped
+   only when it sits at the bullet's text x, one line pitch (the document's tightest) below the row above, and is not wholly bold
+   or two-part; a page number in the band counts as a footer only when it stands clear of the body or repeats on another page, and
+   digits alone are never a running footer.
 2. **JD requirements.** `claude -p --model haiku` extracts requirements (term, aliases, importance,
    knock-outs). One extraction is one draw: fresh extractions of one JD can list different terms and move the required
    coverage of the same resume a lot. So it runs `--samples` times (a cache key per sample, in `~/.cache/ats-check/llm/`), keeps the terms
@@ -214,7 +231,13 @@ Not covered: OpenResume's skills, projects and custom sections, and anything Ope
 `tests/fixtures/*.pdf` (all about a made-up candidate, Jane Q. Example) are generated with `typst` (`uv run python tests/make_fixtures.py`):
 clean (must pass everything), two-column, ruled table, contact only in page header, ligature code
 points, "My Journey" heading, "Spring '22" dates, skills as an image, icon glyphs, and a copy of the
-clean one with ToUnicode stripped. `or_clean`, `or_wordwise` (one text matrix per word), `or_endash`, `or_gap`, `or_oneline_edu` and `or_pagebreak` are the OpenResume-layer set: the base reads cleanly and each other differs by one defect. Each bad fixture trips its own check and a mutation proves it
+clean one with ToUnicode stripped. For the layout reading (`tests/test_layout_rows.py`): `wrap_shapes` (seven roles; wrapped rows that
+end in a date or a range, open with a month or lowercase, wrap at `Acme Inc.` or `:`, hold `Product owner in Mar 2019`, a short undated
+tail and a bare `2`; lowercase-brand, `macOS`, date-first and long single-date headers and a header whose date row ends in `| remote`; a phone split over rows, a skills list wrapped around a bare `2`), `break_page` (a bullet cut
+by the page break), `foot_bare` / `foot_of` / `foot_page` / `foot_slash` / `foot_high` (above the band) / `foot_running` / `foot_single`
+(page footers `1`, `1 of 2`, `Page 1 of 2`, `1/2` between two bullets), `undated_brand` and `season_brand` (a lowercase-brand header with no date, and with `Spring '19`: still FAIL), `indented_headers` / `centered_headers` (headers not at the section-heading x, `Spring` dates: FAIL), `header_repeats_wrapped_row`, `header_at_bullet_text_indent`, `bold_word_wrap`, `nested_bullets`, `digit_band` / `band_skill` (short bottom margin: a date row and a lone `808` in the footer band), and `flat_bullets` /
+`hanging_marker` (no bullet indent: the line-shape fallback, FAIL as before). Rebuild a few with `uv run python tests/make_fixtures.py wrap_shapes foot_slash` (a newer typst changes the bytes of the rest). Each bad fixture trips its own check and a mutation proves it
+`or_clean`, `or_wordwise` (one text matrix per word), `or_endash`, `or_gap`, `or_oneline_edu`, `or_pagebreak` and `or_background` (a comma after the email, a heading OpenResume does not know) are the OpenResume-layer set: the base reads cleanly and each other differs by one defect. Each bad fixture trips its own check and a mutation proves it
 (`tests/mutate.py` edits one call site, the named test must go RED; every mutant is killed, run it to see the count). LLM layers are
 mocked (the CLI path is exercised by patching `llm.subprocess`, where the default runner is bound); the sandbox flags, canary logic and alias verification are unit-tested.
 

@@ -22,6 +22,7 @@ G = "tests/test_score_gates.py"
 W = "tests/test_cli_wiring.py"
 P3 = "tests/test_p3.py"
 OR = "tests/test_openresume.py"
+T = "tests/test_layout_rows.py"
 
 # (file, anchor, replacement, test selector, what it proves)
 MUTANTS = [
@@ -139,7 +140,7 @@ MUTANTS = [
     ("grade.py", "    elif met == len(basic):", "    elif True:", f"{P3}::test_band_rule", "P3: A/B needs every basic criterion met"),
     ("grade.py", "    basic = [r for r in rows if r[\"screenable\"] and r[\"level\"] == \"basic\"]", "    basic = [r for r in rows if r[\"screenable\"]]", f"{P3}::test_band_rule", "P3: preferred criteria never gate the band"),
     ("grade.py", "    screenable = [c for c in crit if c.screenable]\n\n    def one", "    screenable = list(crit)\n\n    def one", f"{P3}::test_only_screenable_criteria_reach_the_grader_and_the_band", "P3: non-screenable criteria are not graded"),
-    ("grade.py", "    return [f\"sample={i}\"] + ([f\"salt={salt}\"] if salt else [])", "    return [f\"salt={salt}\"] if salt else []", f"{P3}::test_one_independent_draw_per_sample_cached_and_refreshable", "P3: a distinct cache key per grader sample"),
+    ("grade.py", "    return [f\"sample={i}\"] + ([f\"salt={salt}\"] if salt else [])", "    return [f\"salt={salt}\"] if salt else []", f"{P3}::test_each_grader_sample_has_its_own_cache_key", "P3: a distinct cache key per grader sample"),
     ("grade.py", "        random.Random(i).shuffle(order)", "        pass", f"{P3}::test_criteria_are_shuffled_per_sample_and_the_cache_key_names_the_model", "P3: criteria are shuffled per sample"),
     ("grade.py", "    return re.sub(r\"\\{(criteria|resume)\\}\", lambda m: vals[m.group(1)], PROMPT)", "    return PROMPT.replace(\"{criteria}\", listing).replace(\"{resume}\", resume_text)", f"{P3}::test_prompt_substitution_is_single_pass", "P3: prompt substitution is single pass"),
     ("grade.py", "    return ref if best >= 0.5 else \"\"", "    return ref", f"{P3}::test_master_id_comes_from_the_bullet_the_quoted_line_is_cut_from", "P3: no master id below the overlap floor"),
@@ -203,6 +204,33 @@ MUTANTS = [
     ("score.py", "\"or_layer\", \"or_page_boundary\")", "\"or_layer\")", f"{OR}::test_the_limitation_and_the_skipped_layer_are_not_listed_as_fixes_to_the_resume", "OR: the page-break limitation is not a resume fix"),
     ("report.py", "    if orc:\n", "    if False:\n", f"{OR}::test_the_report_and_report_json_carry_the_openresume_findings", "OR: report.md section"),
     ("cli.py", "\"openresume\": H.openresume and", "\"openresume\": None and", f"{OR}::test_the_report_and_report_json_carry_the_openresume_findings", "OR: report.json carries the layer output"),
+    # ---- entry detection from page layout: a wrapped bullet row / a page footer is never a job header
+    ("fields.py", '        if roles[i] == "footer":      # a page number', '        if False and roles[i] == "footer":      # a page number', f"{T}::test_a_page_footer_between_two_bullets_is_not_a_job", "a footer row between bullets is skipped, not an undated job"),
+    ("fields.py", '        if roles[i] == "cont":        # the layout puts', '        if False and roles[i] == "cont":        # the layout puts', f"{T}::test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor", "a row the layout puts at the bullet text indent is not a header"),
+    ("fields.py", '            while j >= ex.start and roles[j] == "footer":', '            while False:', f"{T}::test_a_date_only_row_after_a_footer_pairs_with_the_title_row_before_the_footer", "date-only lookback steps over a footer"),
+    ("fields.py", ' and roles[j] != "cont"\n', '\n', f"{T}::test_a_date_only_row_after_a_wrapped_bullet_row_does_not_take_it_for_a_title", "date-only lookback never takes a wrapped row for a title"),
+    ("fields.py", '(L[j][:1].isupper() or roles[j] in ("header", "plain"))', 'L[j][:1].isupper()', f"{T}::test_a_lowercase_brand_title_row_the_layout_places_pairs_with_its_date_row", "a lowercase-brand title row at the margin pairs with its date row"),
+    ("fields.py", 'P.roles[sk.start: sk.end]) if r != "footer")', 'P.roles[sk.start: sk.end]))', f"{T}::test_a_page_footer_row_is_not_part_of_the_skills_list", "a footer row is not a skill"),
+    ("fields.py", '        if i < 2 or P.roles[i] == "footer":', '        if i < 2:', f"{T}::test_a_running_footer_that_looks_like_a_heading_opens_no_section", "a footer row is not a section heading"),
+    ("fields.py", '                        layout=roles[first] or "")', '                        layout="")', f"{T}::test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor", "an entry keeps the layout role of its header row"),
+    ("layout.py", "    if not g.lines or g.columns or g.tables:", "    if not g.lines:", f"{T}::test_a_resume_with_columns_or_a_table_has_no_layout_to_project_onto", "no layout for columns or tables"),
+    ("layout.py", "        if (id(r) in edge and repeats) or (id(r) in in_band and _stands_clear(r, by_page[r.page])):", "        if id(r) in in_band and _stands_clear(r, by_page[r.page]):", f"{T}::test_a_page_footer_between_two_bullets_is_not_a_job", "a footer above the band is found by its repeat"),
+    ("layout.py", "        if (id(r) in edge and repeats) or (id(r) in in_band and _stands_clear(r, by_page[r.page])):", "        if id(r) in edge and repeats:", f"{T}::test_a_page_number_in_the_header_footer_band_is_a_footer_with_no_second_page", "a page number in the band needs no repeat"),
+    ("layout.py", "        if (id(r) in edge and repeats) or (id(r) in in_band and _stands_clear(r, by_page[r.page])):", "        if id(r) in edge or (id(r) in in_band and _stands_clear(r, by_page[r.page])):", f"{T}::test_a_page_number_shape_ending_a_page_and_not_repeated_is_the_wrapped_text_it_looks_like", "a number at the foot of a page that does not repeat is not a footer"),
+    ("layout.py", '    return re.sub(r"\\d+", "", r.key)', "    return r.key", f"{T}::test_a_page_footer_between_two_bullets_is_not_a_job", "a running footer is the same text on every page, number aside"),
+    ("geometry.py", "    if len(ws) >= 2 and ws[0][4] in BULLETS:", "    if False:", f"{T}::test_roles_follow_the_indent_the_bullet_text_starts_at", "bullet text indent read from the first word after the marker"),
+    ("health.py", "fd.parse(e.text, g.style_headings, page_layout)", "fd.parse(e.text, g.style_headings)", f"{T}::test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor", "the layout reaches the parser of every extractor"),
+    ("layout.py", '        if (in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL and not (r.all_bold or r.parts > 1)\n                and _at_leading(prev, r, leading)):', '        if (in_bullet and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL and not (r.all_bold or r.parts > 1)\n                and _at_leading(prev, r, leading)):', f"{T}::test_a_layout_with_no_bullet_indent_places_no_wrapped_row_and_the_parser_falls_back", "text starting at the margin is not a wrapped row"),
+    ("layout.py", '        if (in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL and not (r.all_bold or r.parts > 1)\n                and _at_leading(prev, r, leading)):', '        if (in_bullet and not at_margin and text_x is not None and not (r.all_bold or r.parts > 1)\n                and _at_leading(prev, r, leading)):', f"{T}::test_a_row_indented_somewhere_other_than_the_bullet_text_is_not_a_wrapped_row", "a wrapped row sits at the bullet text indent"),
+    ("layout.py", 'not (r.all_bold or r.parts > 1)', 'not r.parts > 1', f"{T}::test_a_bold_or_right_aligned_row_at_the_bullet_text_indent_is_not_taken_for_a_wrapped_row", "a wholly bold or two-part row at the bullet text indent is a header, not wrapped text"),
+    ("layout.py", 'not (r.all_bold or r.parts > 1)', 'not (r.bold or r.parts > 1)', f"{T}::test_a_wrapped_row_that_opens_with_a_bold_word_is_still_wrapped_text", "a bold first word does not make a wrapped row a header"),
+    ("layout.py", '\n                and _at_leading(prev, r, leading)):', '):', f"{T}::test_a_plain_header_at_the_bullet_text_x_after_paragraph_spacing_is_a_job", "a wrapped row sits one line pitch below the row above, not a paragraph gap"),
+    ("layout.py", '                if len(rk) >= 8 and k.startswith(rk):', '                if False:', f"{T}::test_an_extractor_that_joins_a_wrapped_bullet_into_one_row_is_still_located", "a paragraph an extractor joined is located by its first row"),
+    ("layout.py", '                        return j, j, PART', '                        return j, j, EXACT', f"{T}::test_a_row_that_is_only_the_tail_of_a_visual_row_gets_no_role", "a tail of a visual row is no role"),
+    ("layout.py", '            cursor = j if kind == PREFIX else last + 1', '            cursor = last', f"{T}::test_two_extractor_rows_with_one_text_take_two_visual_rows_in_order", "a visual row an extractor row used up is not matched again"),
+    ("layout.py", '            for j in scan:\n                if self.keys[j] == k:\n                    return j, j, EXACT\n            if len(k) >= 4:\n                for j in scan:\n                    if self.keys[j].startswith(k):\n                        return j, j, PREFIX\n', '', f"{T}::test_a_row_equal_to_a_visual_row_beats_a_join_that_starts_on_an_earlier_one", "an exact or head match of a row beats a join that starts on an earlier row"),
+    ("layout.py", '        if id(r) in in_band and _stem(r):', '        if id(r) in in_band:', f"{T}::test_a_date_row_in_the_footer_band_is_not_a_page_number", "digits alone are no running footer"),
+    ("layout.py", ' and _stands_clear(r, by_page[r.page])):\n            r.role', '):\n            r.role', f"{T}::test_a_skills_row_that_is_only_a_number_in_the_footer_band_is_content", "a number in the band is a footer only when it stands clear of the body"),
 ]
 
 
