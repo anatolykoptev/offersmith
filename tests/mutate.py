@@ -21,6 +21,7 @@ S = "tests/test_samples.py"
 G = "tests/test_score_gates.py"
 W = "tests/test_cli_wiring.py"
 P3 = "tests/test_p3.py"
+T = "tests/test_layout_rows.py"
 
 # (file, anchor, replacement, test selector, what it proves)
 MUTANTS = [
@@ -171,6 +172,29 @@ MUTANTS = [
     ("cli.py", "    args.master = args.master or cfg.master\n", "    args.master = args.master\n", "tests/test_config.py::test_cli_takes_master_and_out_dir_from_the_file", "offersmith.toml master reaches the CLI"),
     ("cli.py", "        args.out = cfg.out_dir / args.resume.stem", "        pass", "tests/test_config.py::test_cli_takes_master_and_out_dir_from_the_file", "offersmith.toml out_dir reaches the CLI"),
     ("config.py", "    for k, var in ENV.items():", "    for k, var in ():", "tests/test_config.py::test_environment_beats_the_file", "environment overrides the file"),
+    # ---- entry detection from page layout: a wrapped bullet row / a page footer is never a job header
+    ("fields.py", '        if roles[i] == "footer":      # a page number', '        if False and roles[i] == "footer":      # a page number', f"{T}::test_a_page_footer_between_two_bullets_is_not_a_job", "a footer row between bullets is skipped, not an undated job"),
+    ("fields.py", '        if roles[i] == "cont":        # the layout puts', '        if False and roles[i] == "cont":        # the layout puts', f"{T}::test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor", "a row the layout puts at the bullet text indent is not a header"),
+    ("fields.py", '            while j >= ex.start and roles[j] == "footer":', '            while False:', f"{T}::test_a_date_only_row_after_a_footer_pairs_with_the_title_row_before_the_footer", "date-only lookback steps over a footer"),
+    ("fields.py", ' and roles[j] != "cont"\n', '\n', f"{T}::test_a_date_only_row_after_a_wrapped_bullet_row_does_not_take_it_for_a_title", "date-only lookback never takes a wrapped row for a title"),
+    ("fields.py", '(L[j][:1].isupper() or roles[j] in ("header", "plain"))', 'L[j][:1].isupper()', f"{T}::test_a_lowercase_brand_title_row_the_layout_places_pairs_with_its_date_row", "a lowercase-brand title row at the margin pairs with its date row"),
+    ("fields.py", 'P.roles[sk.start: sk.end]) if r != "footer")', 'P.roles[sk.start: sk.end]))', f"{T}::test_a_page_footer_row_is_not_part_of_the_skills_list", "a footer row is not a skill"),
+    ("fields.py", '        if i < 2 or P.roles[i] == "footer":', '        if i < 2:', f"{T}::test_a_running_footer_that_looks_like_a_heading_opens_no_section", "a footer row is not a section heading"),
+    ("fields.py", '                        layout=roles[first] or "")', '                        layout="")', f"{T}::test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor", "an entry keeps the layout role of its header row"),
+    ("layout.py", "    if not g.lines or g.columns or g.tables:", "    if not g.lines:", f"{T}::test_a_resume_with_columns_or_a_table_has_no_layout_to_project_onto", "no layout for columns or tables"),
+    ("layout.py", "        if (id(r) in edge and repeats) or id(r) in in_band:", "        if id(r) in in_band:", f"{T}::test_a_page_footer_between_two_bullets_is_not_a_job", "a footer above the band is found by its repeat"),
+    ("layout.py", "        if (id(r) in edge and repeats) or id(r) in in_band:", "        if id(r) in edge and repeats:", f"{T}::test_a_page_number_in_the_header_footer_band_is_a_footer_with_no_second_page", "a page number in the band needs no repeat"),
+    ("layout.py", "        if (id(r) in edge and repeats) or id(r) in in_band:", "        if id(r) in edge:", f"{T}::test_a_page_number_shape_ending_a_page_and_not_repeated_is_the_wrapped_text_it_looks_like", "a number at the foot of a page that does not repeat is not a footer"),
+    ("layout.py", '    return re.sub(r"\\d+", "", r.key)', "    return r.key", f"{T}::test_a_page_footer_between_two_bullets_is_not_a_job", "a running footer is the same text on every page, number aside"),
+    ("layout.py", "        if in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL:", "        if in_bullet and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL:", f"{T}::test_a_layout_with_no_bullet_indent_places_no_wrapped_row_and_the_parser_falls_back", "text starting at the margin is not a wrapped row"),
+    ("layout.py", "        if in_bullet and not at_margin and text_x is not None and abs(r.x0 - text_x) <= INDENT_TOL:", "        if in_bullet and not at_margin and text_x is not None:", f"{T}::test_a_row_indented_somewhere_other_than_the_bullet_text_is_not_a_wrapped_row", "a wrapped row sits at the bullet text indent"),
+    ("layout.py", "            if len(rk) >= 8 and k.startswith(rk):", "            if False:", f"{T}::test_an_extractor_that_joins_a_wrapped_bullet_into_one_row_is_still_located", "a paragraph an extractor joined is located by its first row"),
+    ("geometry.py", "    if len(ws) >= 2 and ws[0][4] in BULLETS:", "    if False:", f"{T}::test_roles_follow_the_indent_the_bullet_text_starts_at", "bullet text indent read from the first word after the marker"),
+    ("health.py", "fd.parse(e.text, g.style_headings, page_layout)", "fd.parse(e.text, g.style_headings)", f"{T}::test_every_wrapped_row_shape_stays_inside_its_bullet_under_every_extractor", "the layout reaches the parser of every extractor"),
+    ("health.py", "            if st == FAIL and not confirmed and (layout_on or len(seen) < n):", "            if False:", f"{T}::test_a_view_that_alone_reads_a_job_with_no_title_is_a_warn_not_a_fail", "a FAIL only one view reads is a WARN"),
+    ("health.py", "            if st == FAIL and not confirmed and (layout_on or len(seen) < n):", "            if st == FAIL and (layout_on or len(seen) < n):", f"{T}::test_a_row_the_layout_places_at_the_margin_keeps_its_fail_even_when_one_view_sees_it", "a row the layout places at the margin keeps its FAIL"),
+    ("health.py", "            if st == FAIL and not confirmed and (layout_on or len(seen) < n):", "            if st == FAIL and not confirmed and len(seen) < n:", f"{T}::test_a_row_the_layout_does_not_place_at_the_margin_is_a_warn_even_when_every_view_agrees", "with a layout, agreement between extractors does not confirm a header"),
+    ("health.py", "        placed = (lay.HEADER,) if strong else lay.AT_MARGIN", "        placed = lay.AT_MARGIN", f"{T}::test_a_layout_with_no_bullet_indent_places_no_wrapped_row_and_the_parser_falls_back", "where headers are bold only a bold row confirms one"),
 ]
 
 
