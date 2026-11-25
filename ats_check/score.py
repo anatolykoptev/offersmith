@@ -11,7 +11,7 @@ def build_fixes(h: Health, results: list[ReqResult], kos: list[dict]) -> list[di
     for c in h.checks:
         if c.status == FAIL:
             fixes.append({"value": 1000, "kind": "parse", "action": c.fix or c.title, "why": f"{c.title}: FAIL", "evidence": c.evidence[:2], "truthful": True})
-        elif c.status == WARN and c.id not in ("location", "phone", "name", "reading_order"):
+        elif c.status == WARN and c.id not in ("location", "phone", "name", "reading_order", "or_layer", "or_page_boundary"):
             fixes.append({"value": 30, "kind": "parse", "action": c.fix or c.title, "why": f"{c.title}: WARN", "evidence": c.evidence[:2], "truthful": True})
     for r in results:
         w = IMPORTANCE_W[r.importance] * (0.1 if r.soft else 1.0)   # soft skills barely rank as fixes

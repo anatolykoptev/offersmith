@@ -136,6 +136,11 @@ def render_md(d: dict) -> str:
         L.append(f"| {c['title']} | {c['status']} | {ev} |")
     passed = [c["title"] for c in d["health"]["checks"] if c["status"] == PASS]
     L.append(f"\nPASS: {', '.join(passed) if passed else 'none'}.  Matching view: `{d['health']['match_view']}`.")
+    orc = [c for c in d["health"]["checks"] if c["id"].startswith("or_") and c["status"] != PASS]
+    if orc:
+        L.append("\nOpenResume layer (a second, independent PDF reader; see docs/ats-check.md):")
+        for c in orc:
+            L.append(f"- **{c['status']} {c['title']}**: " + "; ".join(c["evidence"]) + (f" Fix: {c['fix']}" if c["fix"] else ""))
     L.append("")
     L.append("## Hard requirements (truth column)")
     rows = [r for r in d["requirements"] if not r.get("soft")]

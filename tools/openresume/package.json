@@ -1,0 +1,14 @@
+{
+  "name": "offersmith-openresume-runner",
+  "private": true,
+  "type": "module",
+  "description": "Dependencies of the optional OpenResume layer of the ATS check. pdfjs-dist and @reduxjs/toolkit are pinned to the versions in OpenResume's own package-lock.json (3.7.107 and 1.9.5, not the newest releases): the layer must run the parser as OpenResume runs it. The parser imports an initial-state constant from a redux slice, hence the toolkit. The tar override only clears an audit finding: tar is reached through pdfjs-dist's optional canvas dependency, whose install script never runs (install.sh uses --ignore-scripts).",
+  "dependencies": {
+    "@reduxjs/toolkit": "1.9.5",
+    "pdfjs-dist": "3.7.107",
+    "tsx": "4.23.15"
+  },
+  "overrides": {
+    "tar": "7.5.23"
+  }
+}
