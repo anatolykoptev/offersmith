@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fix: the experience parser no longer counts a wrapped bullet line that carries a date, or a bare page-number line (`1/2`, `Page 1 of 2`, `2`), as a job under the line-based extractors. It had raised a false parse FAIL ("FIX PARSING FIRST") and an entry-count WARN on resumes every extractor read correctly.
+- Fix: the experience parser no longer counts a wrapped bullet row that carries a date (only while the bullet row before it has not ended its sentence, and never a `Title, Company` row), or a page-footer row (`1/2`, `Page 1`, `Page 1 of 2`), as a job under the line-based extractors. It had raised a false parse FAIL ("FIX PARSING FIRST") and an entry-count WARN on resumes every extractor read correctly.
 
 - Offersmith: the project and repository are now `offersmith` (earlier names honest-ats, ats-check). The `offersmith` command is the main one; `honest-ats` and `ats-check` stay as aliases, and the `ats_check` Python package and the `~/.cache/ats-check/` cache keep their names.
 - Claude Code plugin: `.claude-plugin/plugin.json` and `marketplace.json`, and five skills (`master-resume`, `tailor-resume`, `cover-letter`, `ats-check`, `application-answers`) generalised from personal ones, with the scripts they call (`check_master.py`, `check_resume.py`, `render_resume.sh`, `check_letter.py`, `render_letter.sh`), a Typst resume and letter template, and a shipped kill-list.

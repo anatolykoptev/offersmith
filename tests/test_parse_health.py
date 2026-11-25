@@ -229,15 +229,22 @@ def test_a_short_wrapped_line_that_opens_with_a_month_is_not_an_entry():
     assert [e.header for e in es] == [JOB1] and es[0].bullets == 2
 
 
-@pytest.mark.parametrize("footer", ["1/2", "2/2", "Page 1 of 2", "Page 3", "2", "12", "- 2 -"])
-def test_a_page_number_line_is_dropped_not_an_entry(footer):
+@pytest.mark.parametrize("footer", ["1/2", "2/2", "Page 1 of 2", "Page 3", "page 3"])
+def test_a_page_footer_row_is_not_an_entry(footer):
     es = _entries(JOB1, "• Built a thing for a client.", footer, "• Shipped another.")
     assert [e.header for e in es] == [JOB1] and es[0].bullets == 2
-    assert footer not in fd.parse("Jane Q. Example\nx\nEXPERIENCE\n" + footer + "\n").lines
 
 
-def test_a_year_alone_on_a_line_is_not_a_page_number():
-    assert fd.clean_lines("2022\n1/2024\n05/2024") == ["2022", "1/2024", "05/2024"]
+def test_page_numbers_are_dropped_only_in_entry_detection_not_from_the_document():
+    """A bare number row, '- 3 -', a year and a phone split over rows are content, not footers."""
+    assert fd.clean_lines("2022\n1/2024\n05/2024\n415\n555-0142\n- 3 -\n808") == ["2022", "1/2024", "05/2024", "415", "555-0142", "- 3 -", "808"]
+    p = fd.parse("Jane Q. Example\nSenior Engineer\n415\n555-0142\nEXPERIENCE\n" + JOB1 + "\n• Built a thing.\n- 3 -\n• Shipped another.\nSKILLS\nPython,\n808\n, Go\n")
+    assert [e.bullets for e in p.entries] == [3]       # '- 3 -' is a literal bullet
+    assert p.skills == ["Python", "808", "Go"]        # a skills row that is only a number survives
+
+
+def test_a_phone_split_over_rows_survives_the_page_number_filter():
+    assert "555-0142" in fd.parse("Jane Q. Example\n415\n555-0142\nEXPERIENCE\n").lines
 
 
 @pytest.mark.parametrize("header", [
@@ -261,3 +268,53 @@ def test_a_header_glued_onto_the_previous_bullet_still_makes_the_counts_differ()
     assert (len(whole), len(glued)) == (2, 1)
     c = next(c for c in health._field_checks({"a": fd.Parsed(entries=whole), "b": fd.Parsed(entries=glued)}) if c.id == "entries_fragile")
     assert c.status == WARN
+
+
+@pytest.mark.parametrize("after", ["• Built a thing for a client.", "• Built a thing for a client"])    # with and without a closing full stop
+@pytest.mark.parametrize("header", [
+    "dbt Labs, Software Engineer  Spring '19",                 # unparseable date, lowercase brand
+    "dbt Labs, Software Engineer  2019 – 2021",                # valid range at the end
+    "2019 – 2021  dbt Labs, Software Engineer",                # range first
+    "dbt Labs, Software Engineer",                             # no dates at all
+    "développeur logiciel, Acme  2019 – 2021",                 # lowercase, accented, no job word known
+])
+def test_a_real_header_after_a_bullet_is_never_taken_for_a_wrapped_line(after, header):
+    es = _entries(JOB1, after, header, "• Owned a reliable service.")
+    assert [e.header for e in es] == [JOB1, header]
+
+
+def test_a_lowercase_header_with_unparseable_dates_still_fails_the_entries_check():
+    p = fd.parse("Jane Q. Example\nEngineer\nSan Francisco, CA · j@example.com\nEXPERIENCE\n" + JOB1 + "\n• Built a thing for a client.\n"
+                 "dbt Labs, Software Engineer  Spring '19\n• Owned a reliable service.\nSKILLS\nPython, Go, Docker\n")
+    c = next(c for c in health._field_checks({"v": p}) if c.id == "entries")
+    assert len(p.entries) == 2 and c.status == FAIL
+
+
+@pytest.mark.parametrize("after", ["• Built a thing for a client.", "• Built a thing for a client"])
+def test_a_long_single_date_header_ending_in_a_full_stop_is_still_an_entry(after):
+    h = "Mar 2019  Senior Software Engineer, The Acme Research and Development Co."
+    es = _entries(JOB1, after, h, "• Owned a reliable service.")
+    assert [e.header for e in es] == [JOB1, h] and es[1].dates_problem == "single date, no range"
+
+
+def test_a_non_bullet_row_between_the_bullet_and_the_dated_row_ends_the_wrap():
+    """'Austin, TX' is not a wrap of the bullet, so what follows it is judged on its own, as before."""
+    es = _entries(JOB1, "• Built a thing for a client", "Austin, TX", "and continued that work in November 2026.", "• Owned a service.")
+    assert [e.header for e in es] == [JOB1, "and continued that work in November 2026."]
+
+
+def test_a_page_break_ends_the_wrap():
+    es = _entries(JOB1, "• Built a thing for a client in the", "1/2", "and continued that work in November 2026.", "• Owned a service.")
+    assert len(es) == 2
+
+
+def test_a_wrap_continues_only_while_the_row_before_it_has_no_sentence_end():
+    """The same row is a header after a finished sentence and a wrapped line after an unfinished one."""
+    row = "and continued that work in November 2026."
+    assert [e.header for e in _entries(JOB1, "• Built a thing for a client.", row, "• Owned a service.")] == [JOB1, row]
+    assert [e.header for e in _entries(JOB1, "• Built a thing for a client and", row, "• Owned a service.")] == [JOB1]
+
+
+def test_a_lowercase_brand_row_after_an_unfinished_bullet_is_still_a_header():
+    es = _entries(JOB1, "• Built a thing for a client", "iOS Developer", "• Owned a reliable service.")
+    assert [e.header for e in es] == [JOB1, "iOS Developer"]
