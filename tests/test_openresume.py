@@ -15,7 +15,8 @@ from ats_check import health, openresume as orl
 from ats_check.health import FAIL, PASS, WARN
 from conftest import FIX, OPENRESUME_HOME
 
-HOME = Path(OPENRESUME_HOME).expanduser() if OPENRESUME_HOME and OPENRESUME_HOME.lower() != "off" else orl.CACHE / "openresume"
+HOME = (Path(OPENRESUME_HOME).expanduser() if OPENRESUME_HOME and OPENRESUME_HOME.lower() not in orl.OFF
+        else Path(os.environ.get("ATS_CHECK_CACHE") or Path.home() / ".cache" / "ats-check") / "openresume")
 
 
 def need_layer():
